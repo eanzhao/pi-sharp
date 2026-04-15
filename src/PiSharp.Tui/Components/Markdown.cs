@@ -1,0 +1,179 @@
+using Markdig;
+using Markdig.Syntax;
+using Markdig.Syntax.Inlines;
+
+namespace PiSharp.Tui;
+
+public sealed class Markdown : Component
+{
+    private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
+        .UseAdvancedExtensions()
+        .Build();
+
+    private string _value;
+
+    public Markdown(string value = "", int paddingX = 0, int paddingY = 0)
+    {
+        _value = value;
+        PaddingX = Math.Max(0, paddingX);
+        PaddingY = Math.Max(0, paddingY);
+    }
+
+    public int PaddingX { get; }
+
+    public int PaddingY { get; }
+
+    public string Value
+    {
+        get => _value;
+        set
+        {
+            if (_value == value)
+            {
+                return;
+            }
+
+            _value = value;
+            RaiseInvalidated();
+        }
+    }
+
+    public override IReadOnlyList<string> Render(RenderContext context)
+    {
+        var width = context.Width;
+        var contentWidth = Math.Max(1, width - (PaddingX * 2));
+        var lines = RenderMarkdownBlocks(_value, contentWidth);
+        var result = new List<string>();
+        var empty = new string(' ', width);
+
+        for (var index = 0; index < PaddingY; index++)
+        {
+            result.Add(empty);
+        }
+
+        foreach (var line in lines)
+        {
+            var padded = TextLayout.PadToWidth(line, contentWidth);
+            result.Add($"{new string(' ', PaddingX)}{padded}{new string(' ', PaddingX)}");
+        }
+
+        for (var index = 0; index < PaddingY; index++)
+        {
+            result.Add(empty);
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<string> RenderMarkdownBlocks(string markdown, int width)
+    {
+        var document = Markdig.Markdown.Parse(markdown ?? string.Empty, Pipeline);
+        var result = new List<string>();
+
+        foreach (var block in document)
+        {
+            switch (block)
+            {
+                case HeadingBlock heading:
+                    result.AddRange(TextLayout.Wrap($"{new string('#', heading.Level)} {RenderInline(heading.Inline)}", width));
+                    result.Add(string.Empty);
+                    break;
+                case ParagraphBlock paragraph:
+                    result.AddRange(TextLayout.Wrap(RenderInline(paragraph.Inline), width));
+                    result.Add(string.Empty);
+                    break;
+                case ListBlock list:
+                    foreach (var item in list.OfType<ListItemBlock>())
+                    {
+                        foreach (var child in item)
+                        {
+                            if (child is ParagraphBlock itemParagraph)
+                            {
+                                var wrapped = TextLayout.Wrap(RenderInline(itemParagraph.Inline), Math.Max(1, width - 2));
+                                for (var index = 0; index < wrapped.Count; index++)
+                                {
+                                    var prefix = index == 0 ? "- " : "  ";
+                                    result.Add(prefix + wrapped[index]);
+                                }
+                            }
+                        }
+                    }
+
+                    result.Add(string.Empty);
+                    break;
+                case QuoteBlock quote:
+                    foreach (var child in quote)
+                    {
+                        if (child is ParagraphBlock quotedParagraph)
+                        {
+                            foreach (var line in TextLayout.Wrap(RenderInline(quotedParagraph.Inline), Math.Max(1, width - 2)))
+                            {
+                                result.Add($"> {line}");
+                            }
+                        }
+                    }
+
+                    result.Add(string.Empty);
+                    break;
+                case FencedCodeBlock fencedCode:
+                    result.Add($"```{fencedCode.Info}");
+                    foreach (var line in fencedCode.Lines.Lines)
+                    {
+                        result.Add($"    {line.ToString()}");
+                    }
+
+                    result.Add("```");
+                    result.Add(string.Empty);
+                    break;
+                case ThematicBreakBlock:
+                    result.Add(new string('-', Math.Min(width, 8)));
+                    result.Add(string.Empty);
+                    break;
+            }
+        }
+
+        if (result.Count > 0 && result[^1].Length == 0)
+        {
+            result.RemoveAt(result.Count - 1);
+        }
+
+        return result.Count > 0 ? result : [string.Empty];
+    }
+
+    private static string RenderInline(ContainerInline? inline)
+    {
+        if (inline is null)
+        {
+            return string.Empty;
+        }
+
+        var result = new List<string>();
+        foreach (var child in inline)
+        {
+            switch (child)
+            {
+                case LiteralInline literal:
+                    result.Add(literal.Content.ToString());
+                    break;
+                case LineBreakInline:
+                    result.Add(Environment.NewLine);
+                    break;
+                case CodeInline code:
+                    result.Add($"`{code.Content}`");
+                    break;
+                case EmphasisInline emphasis:
+                    var marker = emphasis.DelimiterCount >= 2 ? "**" : "*";
+                    result.Add($"{marker}{RenderInline(emphasis)}{marker}");
+                    break;
+                case LinkInline link when !link.IsImage:
+                    result.Add($"[{RenderInline(link)}]({link.Url})");
+                    break;
+                case ContainerInline container:
+                    result.Add(RenderInline(container));
+                    break;
+            }
+        }
+
+        return string.Concat(result);
+    }
+}

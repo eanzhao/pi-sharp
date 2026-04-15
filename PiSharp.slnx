@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PiSharp.Tui/PiSharp.Tui.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PiSharp.Tui.Tests/PiSharp.Tui.Tests.csproj" />
+  </Folder>
+</Solution>
