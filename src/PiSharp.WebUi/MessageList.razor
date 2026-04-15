@@ -1,0 +1,64 @@
+@if (Messages.Count == 0 && StreamingMessage is null)
+{
+    <div class="ps-message-list ps-message-list-empty">
+        <div class="ps-empty-copy">
+            <h3>@EmptyStateTitle</h3>
+            <p>@EmptyStateBody</p>
+        </div>
+    </div>
+}
+else
+{
+    <div class="ps-message-list">
+        @foreach (var message in Messages)
+        {
+            if (message.Role == ChatRole.User)
+            {
+                <UserMessageView @key="message" Message="message" />
+            }
+            else if (message.Role == ChatRole.Assistant)
+            {
+                <AssistantMessageView @key="message"
+                                      Message="message"
+                                      Tools="Tools"
+                                      PendingToolCalls="PendingToolCalls"
+                                      IsStreaming="false" />
+            }
+            else if (message.Role == ChatRole.Tool)
+            {
+                <ToolResultMessageView @key="message" Message="message" />
+            }
+        }
+
+        @if (StreamingMessage is not null)
+        {
+            <AssistantMessageView Message="StreamingMessage"
+                                  Tools="Tools"
+                                  PendingToolCalls="PendingToolCalls"
+                                  IsStreaming="IsStreaming" />
+        }
+    </div>
+}
+
+@code {
+    [Parameter]
+    public IReadOnlyList<ChatMessage> Messages { get; set; } = Array.Empty<ChatMessage>();
+
+    [Parameter]
+    public IReadOnlyList<AgentTool> Tools { get; set; } = Array.Empty<AgentTool>();
+
+    [Parameter]
+    public IReadOnlySet<string> PendingToolCalls { get; set; } = new HashSet<string>(StringComparer.Ordinal);
+
+    [Parameter]
+    public ChatMessage? StreamingMessage { get; set; }
+
+    [Parameter]
+    public bool IsStreaming { get; set; }
+
+    [Parameter]
+    public string EmptyStateTitle { get; set; } = "No messages yet";
+
+    [Parameter]
+    public string EmptyStateBody { get; set; } = "Send a prompt to begin streaming responses from the bound agent.";
+}

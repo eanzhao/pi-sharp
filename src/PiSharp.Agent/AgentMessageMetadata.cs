@@ -105,7 +105,22 @@ public static class AgentMessageMetadata
     public static bool TryGetUsage(ChatMessage message, [NotNullWhen(true)] out ExtendedUsageDetails? usage)
     {
         usage = null;
-        return TryGetAdditionalProperty(message, UsageKey, out usage);
+
+        if (TryGetAdditionalProperty(message, UsageKey, out ExtendedUsageDetails? extendedUsage) &&
+            extendedUsage is not null)
+        {
+            usage = extendedUsage;
+            return true;
+        }
+
+        if (TryGetAdditionalProperty(message, UsageKey, out UsageDetails? usageDetails) &&
+            usageDetails is not null)
+        {
+            usage = usageDetails as ExtendedUsageDetails ?? ExtendedUsageDetails.FromUsage(usageDetails);
+            return true;
+        }
+
+        return false;
     }
 
     public static string? GetErrorMessage(ChatMessage message) =>

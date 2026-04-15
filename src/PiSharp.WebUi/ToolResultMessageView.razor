@@ -1,0 +1,41 @@
+<article class="ps-tool-result @(IsError ? "ps-tool-result-error" : string.Empty)">
+    <header class="ps-tool-result-header">
+        <div>
+            <p class="ps-tool-result-kicker">tool result</p>
+            <h4>@ToolName</h4>
+        </div>
+        <span class="ps-tool-result-status">@(IsError ? "error" : "completed")</span>
+    </header>
+
+    @if (string.IsNullOrWhiteSpace(Body))
+    {
+        <div class="ps-tool-result-empty">(no output)</div>
+    }
+    else if (UseCodeBlock)
+    {
+        <pre>@Body</pre>
+    }
+    else
+    {
+        <div class="ps-tool-result-body">@MarkdownRenderer.ToMarkupString(Body)</div>
+    }
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public ChatMessage Message { get; set; } = default!;
+
+    private string ToolName =>
+        AgentMessageMetadata.TryGetToolName(Message, out var toolName) && !string.IsNullOrWhiteSpace(toolName)
+            ? toolName
+            : "tool";
+
+    private bool IsError => AgentMessageMetadata.IsToolError(Message);
+
+    private string Body => WebUiFormatting.GetToolResultBody(Message);
+
+    private bool UseCodeBlock =>
+        Body.Contains('\n', StringComparison.Ordinal) ||
+        Body.TrimStart().StartsWith('{') ||
+        Body.TrimStart().StartsWith('[');
+}

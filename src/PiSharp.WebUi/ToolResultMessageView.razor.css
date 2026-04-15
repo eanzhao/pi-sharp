@@ -1,0 +1,71 @@
+.ps-tool-result {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    max-width: min(42rem, 100%);
+    padding: 1rem 1.1rem;
+    border: 1px solid rgba(16, 38, 45, 0.14);
+    border-radius: 1.15rem;
+    background: rgba(255, 255, 255, 0.7);
+}
+
+.ps-tool-result-error {
+    border-color: rgba(191, 92, 54, 0.32);
+    background: rgba(191, 92, 54, 0.08);
+}
+
+.ps-tool-result-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.ps-tool-result-kicker {
+    margin: 0 0 0.15rem;
+    color: #5e6d72;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.ps-tool-result h4 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.ps-tool-result-status {
+    padding: 0.35rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(16, 38, 45, 0.08);
+    color: #41585f;
+    font-size: 0.76rem;
+    font-weight: 700;
+    text-transform: lowercase;
+    white-space: nowrap;
+}
+
+.ps-tool-result pre {
+    margin: 0;
+    overflow-x: auto;
+    padding: 0.9rem;
+    border-radius: 0.85rem;
+    background: #142f36;
+    color: #f9f6f0;
+    font-size: 0.88rem;
+    line-height: 1.5;
+}
+
+.ps-tool-result-body,
+.ps-tool-result-empty {
+    color: #274148;
+}
+
+.ps-tool-result-body :is(p, ul, ol, pre, blockquote) {
+    margin: 0;
+}
+
+.ps-tool-result-body :is(p, ul, ol, pre, blockquote) + :is(p, ul, ol, pre, blockquote) {
+    margin-top: 0.8rem;
+}

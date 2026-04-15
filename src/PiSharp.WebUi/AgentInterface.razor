@@ -1,0 +1,159 @@
+@implements IDisposable
+
+@if (Agent is null)
+{
+    <section class="ps-agent-shell">
+        <div class="ps-empty-card">
+            <h3>@EmptyStateTitle</h3>
+            <p>@EmptyStateBody</p>
+        </div>
+    </section>
+}
+else
+{
+    <section class="ps-agent-shell">
+        <header class="ps-agent-meta">
+            <div>
+                <p class="ps-meta-label">bound model</p>
+                <h3 class="ps-meta-title">@DisplayModelName</h3>
+                <p class="ps-meta-subtitle">@($"{Agent.State.Model.ProviderId.Value}/{Agent.State.Model.Id}")</p>
+            </div>
+
+            <div class="ps-meta-pills">
+                <span class="ps-pill">@StatusLabel</span>
+                <span class="ps-pill">@WebUiFormatting.FormatThinkingLevel(Agent.State.ThinkingLevel)</span>
+                <span class="ps-pill">@Agent.State.Tools.Count tool(s)</span>
+            </div>
+        </header>
+
+        <div class="ps-transcript-region">
+            <MessageList Messages="@(_viewModel?.Messages ?? [])"
+                         Tools="@(Agent.State.Tools)"
+                         PendingToolCalls="@(_viewModel?.PendingToolCalls ?? EmptyPendingToolCalls)"
+                         StreamingMessage="@_viewModel?.StreamingMessage"
+                         IsStreaming="@(_viewModel?.IsStreaming ?? false)"
+                         EmptyStateTitle="@EmptyStateTitle"
+                         EmptyStateBody="@EmptyStateBody" />
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(CurrentErrorMessage))
+        {
+            <div class="ps-inline-error">@CurrentErrorMessage</div>
+        }
+
+        <form class="ps-composer" @onsubmit="OnSubmitAsync" @onsubmit:preventDefault="true">
+            <label class="ps-composer-label" for="@_composerId">Prompt</label>
+            <textarea id="@_composerId"
+                      class="ps-composer-input"
+                      rows="4"
+                      placeholder="@Placeholder"
+                      disabled="@(_viewModel?.IsStreaming ?? true)"
+                      @bind="_input"
+                      @bind:event="oninput"></textarea>
+
+            <div class="ps-composer-actions">
+                <span class="ps-composer-hint">This composer sends prompts directly to the bound <code>Agent</code>.</span>
+                <button type="submit" class="ps-send-button" disabled="@(!CanSend)">Send</button>
+            </div>
+        </form>
+    </section>
+}
+
+@code {
+    private static readonly IReadOnlySet<string> EmptyPendingToolCalls = new HashSet<string>(StringComparer.Ordinal);
+
+    private readonly string _composerId = $"pi-sharp-web-ui-{Guid.NewGuid():N}";
+
+    private AgentRuntime? _attachedAgent;
+    private AgentViewModel? _viewModel;
+    private string _input = string.Empty;
+    private string? _submissionError;
+
+    [Parameter]
+    public AgentRuntime? Agent { get; set; }
+
+    [Parameter]
+    public string Placeholder { get; set; } = "Ask pi-sharp to inspect or change code";
+
+    [Parameter]
+    public string EmptyStateTitle { get; set; } = "No messages yet";
+
+    [Parameter]
+    public string EmptyStateBody { get; set; } = "Send a prompt to begin streaming responses from the bound agent.";
+
+    private bool CanSend =>
+        Agent is not null &&
+        _viewModel is { IsStreaming: false } &&
+        !string.IsNullOrWhiteSpace(_input);
+
+    private string CurrentErrorMessage => _submissionError ?? _viewModel?.ErrorMessage ?? string.Empty;
+
+    private string DisplayModelName =>
+        Agent is null
+            ? "No model"
+            : string.IsNullOrWhiteSpace(Agent.State.Model.Name)
+                ? Agent.State.Model.Id
+                : Agent.State.Model.Name;
+
+    private string StatusLabel => _viewModel?.IsStreaming == true ? "streaming" : "idle";
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_attachedAgent, Agent))
+        {
+            return;
+        }
+
+        DetachViewModel();
+
+        if (Agent is null)
+        {
+            return;
+        }
+
+        _viewModel = new AgentViewModel(Agent);
+        _viewModel.Changed += HandleViewModelChanged;
+        _attachedAgent = Agent;
+    }
+
+    public void Dispose() => DetachViewModel();
+
+    private async Task OnSubmitAsync()
+    {
+        if (!CanSend || _viewModel is null)
+        {
+            return;
+        }
+
+        var prompt = _input.Trim();
+        _input = string.Empty;
+        _submissionError = null;
+
+        try
+        {
+            await _viewModel.SendAsync(prompt).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            _input = prompt;
+            _submissionError = exception.Message;
+        }
+    }
+
+    private void HandleViewModelChanged(object? sender, EventArgs e) =>
+        _ = InvokeAsync(StateHasChanged);
+
+    private void DetachViewModel()
+    {
+        if (_viewModel is null)
+        {
+            _attachedAgent = null;
+            return;
+        }
+
+        _viewModel.Changed -= HandleViewModelChanged;
+        _viewModel.Dispose();
+        _viewModel = null;
+        _attachedAgent = null;
+    }
+}

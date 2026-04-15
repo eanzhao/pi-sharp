@@ -1,0 +1,26 @@
+<article class="ps-message ps-message-user">
+    <div class="ps-message-frame">
+        @if (!string.IsNullOrWhiteSpace(DisplayText))
+        {
+            <div class="ps-markdown">@MarkdownRenderer.ToMarkupString(DisplayText)</div>
+        }
+
+        @if (AttachmentCount > 0)
+        {
+            <div class="ps-message-meta">@($"{AttachmentCount} non-text attachment(s) omitted in phase 06.")</div>
+        }
+    </div>
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public ChatMessage Message { get; set; } = default!;
+
+    private string DisplayText => string.Join(
+        "\n\n",
+        Message.Contents.OfType<TextContent>()
+            .Select(static content => content.Text)
+            .Where(static text => !string.IsNullOrWhiteSpace(text)));
+
+    private int AttachmentCount => Message.Contents.Count(static content => content is not TextContent);
+}

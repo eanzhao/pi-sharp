@@ -1,0 +1,85 @@
+<article class="ps-assistant-message">
+    <header class="ps-assistant-header">
+        <div>
+            <p class="ps-assistant-kicker">assistant</p>
+            <h4>@HeaderTitle</h4>
+        </div>
+        <span class="ps-assistant-status">@(IsStreaming ? "streaming" : "ready")</span>
+    </header>
+
+    <div class="ps-assistant-body">
+        @foreach (var content in Message.Contents)
+        {
+            switch (content)
+            {
+                case TextContent text when !string.IsNullOrWhiteSpace(text.Text):
+                    <div class="ps-rich-block">@MarkdownRenderer.ToMarkupString(text.Text)</div>
+                    break;
+
+                case TextReasoningContent reasoning when !string.IsNullOrWhiteSpace(reasoning.Text):
+                    <ThinkingBlock Content="@reasoning.Text" IsStreaming="IsStreaming" />
+                    break;
+
+                case FunctionCallContent toolCall:
+                    <ToolCallView ToolCall="toolCall"
+                                  ToolLabel="@WebUiFormatting.ResolveToolLabel(toolCall, Tools)"
+                                  Pending="PendingToolCalls.Contains(toolCall.CallId)"
+                                  IsStreaming="IsStreaming" />
+                    break;
+            }
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(UsageLabel) && !IsStreaming)
+    {
+        <div class="ps-assistant-usage">@UsageLabel</div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <div class="ps-assistant-error">@ErrorMessage</div>
+    }
+
+    @if (IsAborted)
+    {
+        <div class="ps-assistant-aborted">Request aborted.</div>
+    }
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public ChatMessage Message { get; set; } = default!;
+
+    [Parameter]
+    public IReadOnlyList<AgentTool> Tools { get; set; } = Array.Empty<AgentTool>();
+
+    [Parameter]
+    public IReadOnlySet<string> PendingToolCalls { get; set; } = new HashSet<string>(StringComparer.Ordinal);
+
+    [Parameter]
+    public bool IsStreaming { get; set; }
+
+    private string HeaderTitle =>
+        Message.Contents.OfType<FunctionCallContent>().Any()
+            ? "Working through tool calls"
+            : "Response";
+
+    private string UsageLabel
+    {
+        get
+        {
+            if (!AgentMessageMetadata.TryGetUsage(Message, out var usage))
+            {
+                return string.Empty;
+            }
+
+            return WebUiFormatting.FormatUsage(usage);
+        }
+    }
+
+    private string ErrorMessage => AgentMessageMetadata.GetErrorMessage(Message) ?? string.Empty;
+
+    private bool IsAborted =>
+        AgentMessageMetadata.TryGetFinishReason(Message, out var finishReason) &&
+        Equals(finishReason, AgentMessageMetadata.Aborted);
+}

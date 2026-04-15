@@ -1,0 +1,28 @@
+.ps-message-list {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 0.9rem;
+    width: 100%;
+}
+
+.ps-message-list-empty {
+    align-items: center;
+    justify-content: center;
+}
+
+.ps-empty-copy {
+    max-width: 30rem;
+    text-align: center;
+}
+
+.ps-empty-copy h3 {
+    margin: 0 0 0.45rem;
+    font-size: 1.1rem;
+}
+
+.ps-empty-copy p {
+    margin: 0;
+    color: #5e6d72;
+    line-height: 1.6;
+}

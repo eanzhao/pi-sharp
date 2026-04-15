@@ -1,0 +1,19 @@
+<details class="ps-thinking" open="@IsStreaming">
+    <summary>
+        <span>Thinking</span>
+        @if (IsStreaming)
+        {
+            <span class="ps-thinking-pulse">streaming</span>
+        }
+    </summary>
+
+    <div class="ps-thinking-body">@MarkdownRenderer.ToMarkupString(Content)</div>
+</details>
+
+@code {
+    [Parameter, EditorRequired]
+    public string Content { get; set; } = string.Empty;
+
+    [Parameter]
+    public bool IsStreaming { get; set; }
+}

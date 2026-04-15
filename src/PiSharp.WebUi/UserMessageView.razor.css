@@ -1,0 +1,26 @@
+.ps-message-user {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.ps-message-frame {
+    max-width: min(42rem, 100%);
+    padding: 1rem 1.15rem;
+    border-radius: 1.3rem 1.3rem 0.35rem 1.3rem;
+    background: linear-gradient(135deg, #10262d 0%, #1d4550 100%);
+    color: #f9f6f0;
+}
+
+.ps-message-meta {
+    margin-top: 0.75rem;
+    color: rgba(249, 246, 240, 0.74);
+    font-size: 0.82rem;
+}
+
+.ps-markdown :is(p, ul, ol, pre, blockquote) {
+    margin: 0;
+}
+
+.ps-markdown :is(p, ul, ol, pre, blockquote) + :is(p, ul, ol, pre, blockquote) {
+    margin-top: 0.85rem;
+}

@@ -1,0 +1,74 @@
+.ps-assistant-message {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+    max-width: min(44rem, 100%);
+    padding: 1rem 1.1rem;
+    border: 1px solid rgba(16, 38, 45, 0.14);
+    border-radius: 1.2rem 1.2rem 1.2rem 0.35rem;
+    background: rgba(255, 255, 255, 0.7);
+}
+
+.ps-assistant-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.ps-assistant-kicker {
+    margin: 0 0 0.15rem;
+    color: #5e6d72;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.ps-assistant-header h4 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.ps-assistant-status {
+    padding: 0.35rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(16, 38, 45, 0.08);
+    color: #41585f;
+    font-size: 0.76rem;
+    font-weight: 700;
+    text-transform: lowercase;
+    white-space: nowrap;
+}
+
+.ps-assistant-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+}
+
+.ps-rich-block {
+    color: #213c43;
+    line-height: 1.65;
+}
+
+.ps-rich-block :is(p, ul, ol, pre, blockquote) {
+    margin: 0;
+}
+
+.ps-rich-block :is(p, ul, ol, pre, blockquote) + :is(p, ul, ol, pre, blockquote) {
+    margin-top: 0.8rem;
+}
+
+.ps-assistant-usage,
+.ps-assistant-aborted {
+    color: #5e6d72;
+    font-size: 0.84rem;
+}
+
+.ps-assistant-error {
+    padding: 0.85rem 0.95rem;
+    border-radius: 0.9rem;
+    background: rgba(191, 92, 54, 0.12);
+    color: #7b2b13;
+}

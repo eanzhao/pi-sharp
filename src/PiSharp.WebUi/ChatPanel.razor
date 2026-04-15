@@ -1,0 +1,46 @@
+@if (Agent is null)
+{
+    <section class="ps-chat-panel ps-chat-panel-empty">
+        <div class="ps-empty-card">
+            <h2>No agent configured</h2>
+            <p>Attach a <code>PiSharp.Agent.Agent</code> instance to start rendering a chat transcript.</p>
+        </div>
+    </section>
+}
+else
+{
+    <section class="ps-chat-panel">
+        @if (!string.IsNullOrWhiteSpace(Title))
+        {
+            <header class="ps-panel-header">
+                <div>
+                    <p class="ps-kicker">pi-sharp web ui</p>
+                    <h2>@Title</h2>
+                </div>
+                <div class="ps-header-badge">@Agent.State.Model.Name</div>
+            </header>
+        }
+
+        <AgentInterface Agent="Agent"
+                        Placeholder="@Placeholder"
+                        EmptyStateTitle="@EmptyStateTitle"
+                        EmptyStateBody="@EmptyStateBody" />
+    </section>
+}
+
+@code {
+    [Parameter]
+    public AgentRuntime? Agent { get; set; }
+
+    [Parameter]
+    public string Title { get; set; } = "Agent Console";
+
+    [Parameter]
+    public string Placeholder { get; set; } = "Ask pi-sharp to inspect or change code";
+
+    [Parameter]
+    public string EmptyStateTitle { get; set; } = "No messages yet";
+
+    [Parameter]
+    public string EmptyStateBody { get; set; } = "Send a prompt to begin streaming responses from the bound agent.";
+}

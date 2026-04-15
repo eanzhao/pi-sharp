@@ -1,0 +1,32 @@
+<article class="ps-tool-call">
+    <header class="ps-tool-call-header">
+        <div>
+            <p class="ps-tool-call-kicker">tool call</p>
+            <h4>@ToolLabel</h4>
+        </div>
+        <span class="ps-tool-call-status">@StatusLabel</span>
+    </header>
+
+    <pre>@WebUiFormatting.SerializeToolArguments(ToolCall)</pre>
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public FunctionCallContent ToolCall { get; set; } = default!;
+
+    [Parameter]
+    public string ToolLabel { get; set; } = string.Empty;
+
+    [Parameter]
+    public bool Pending { get; set; }
+
+    [Parameter]
+    public bool IsStreaming { get; set; }
+
+    private string StatusLabel =>
+        Pending
+            ? "running"
+            : IsStreaming
+                ? "streaming"
+                : "queued";
+}
