@@ -13,6 +13,7 @@ in `pi-mono/` (gitignored — read-only reference, do not modify).
 - **Solution**: `PiSharp.sln`
 - **Test Framework**: xUnit
 - **Serialization**: System.Text.Json
+- **LLM Foundation**: Microsoft.Extensions.AI (MEAI) — `IChatClient`, `ChatMessage`, `AIContent`, `AIFunction`
 
 ## Repository Layout
 
@@ -72,14 +73,34 @@ docs(00): project overview and architecture plan
 feat(agent): implement agent loop with tool calling
 ```
 
+## MEAI (Microsoft.Extensions.AI) Strategy
+
+The project uses MEAI as the LLM interaction foundation layer:
+
+- **Use directly**: `IChatClient` (provider interface), `ChatMessage`/`AIContent` (message model),
+  `AIFunction`/`AIFunctionFactory` (tool definitions), `ChatClientBuilder` (middleware pipeline)
+- **Build on top**: Fine-grained event stream adapter (convert flat `ChatResponseUpdate` to
+  `TextStart`/`TextDelta`/`TextEnd` events), Agent loop with hooks, Extension system
+- **Provider SDKs**: OpenAI, Anthropic, Google official SDKs all implement `IChatClient` natively
+
+Key NuGet packages:
+- `Microsoft.Extensions.AI.Abstractions` — core interfaces and types
+- `Microsoft.Extensions.AI` — middleware utilities
+- `Microsoft.Extensions.AI.OpenAI` — OpenAI/Azure provider
+- `Anthropic` — official Anthropic SDK with IChatClient
+- `Google.GenAI` — official Google SDK with IChatClient
+
 ## Key Design Decisions
 
-- **Data interfaces → `record`**: StreamOptions, Tool (schema), Context, ThinkingBudgets
-- **Behavioral interfaces → `interface`**: IProvider (`StreamAsync()`), IComponent (`Render()`), IExtension
-- **Closed union types → abstract record + sealed derived types**: Message, AssistantMessageEvent, StopReason
+- **LLM foundation → MEAI**: `IChatClient` as provider interface, `ChatMessage`/`AIContent` as message model
+- **Tool definitions → MEAI `AIFunction`**: auto-generated JSON schemas from .NET methods
+- **Middleware → MEAI `ChatClientBuilder`**: logging, caching, telemetry via pipeline
+- **Data interfaces → `record`**: StreamOptions, Context, ThinkingBudgets (extended beyond MEAI)
+- **Behavioral interfaces → `interface`**: IComponent (`Render()`), IExtension
+- **Closed union types → abstract record + sealed derived types**: AssistantMessageEvent, AgentEvent
 - **Open union types → `readonly record struct` wrapper**: ApiId, ProviderId
-- **Declaration merging → DI + registry pattern**: custom messages via `Dictionary<string, Func<JsonElement, AgentMessage>>`
-- **TypeScript generics → C# generics with interface constraints** (`where T : IProvider`)
+- **Declaration merging → DI + registry + AIContent subclassing**
+- **TypeScript generics → C# generics with interface constraints**
 - **npm workspaces → .NET Solution with ProjectReference**
 - **async/await + AsyncIterable → `async/await` + `IAsyncEnumerable<T>`**
 - **JSON serialization → `System.Text.Json` with source generators**
@@ -100,8 +121,10 @@ The original pi-mono has 7 packages with this dependency graph (from package.jso
 ```
 
 Key abstractions to port:
-- `Provider` (ai): LLM provider with `StreamAsync()` / `CompleteAsync()`
-- `AgentLoop` (agent): orchestrates LLM calls and tool execution
-- `AgentTool` (agent): tool definition with schema + execute
+- `Provider` (ai): **covered by MEAI `IChatClient`** — no custom provider interface needed
+- `Tool` (ai): **covered by MEAI `AIFunction`** — auto schema generation from .NET methods
+- `AssistantMessageEvent` (ai): custom event stream adapter on top of MEAI's `ChatResponseUpdate`
+- `AgentLoop` (agent): orchestrates `IChatClient` calls and tool execution
+- `AgentTool` (agent): wraps `AIFunction` with agent-specific hooks (beforeToolCall, afterToolCall)
 - `Component` (tui): UI element with `Render()` + input handling
 - `Extension` (coding-agent): plugin with lifecycle hooks

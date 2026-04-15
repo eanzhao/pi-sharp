@@ -34,17 +34,23 @@ dotnet run --project src/PiSharp.Cli  # Run the CLI
 
 1. **Follow the dependency order**: Ai, Tui (parallel leaves) → Agent → CodingAgent → Cli
 2. **One doc + one commit per phase**: each phase adds a `docs/NN-*.md` and the implementation
-3. **C# idioms over TypeScript transliteration**:
+3. **Use MEAI as foundation**:
+   - Use `IChatClient` as the LLM provider interface (do NOT create a custom `IProvider`)
+   - Use `ChatMessage` / `AIContent` as the message model
+   - Use `AIFunction` / `AIFunctionFactory` for tool definitions
+   - Use `ChatClientBuilder` pipeline for middleware (logging, caching, telemetry)
+   - Build custom event stream adapter on top of MEAI's `ChatResponseUpdate`
+4. **C# idioms over TypeScript transliteration**:
    - Use `record` for immutable data types (options, config, results)
-   - Use abstract `record` + `sealed` derived types for discriminated unions (Message, Event)
-   - Use `interface` (with `I` prefix) for behavioral abstractions (IProvider, IComponent)
+   - Use abstract `record` + `sealed` derived types for discriminated unions (Event, AgentEvent)
+   - Use `interface` (with `I` prefix) for behavioral abstractions (IComponent, IExtension)
    - Use `readonly record struct` for strongly-typed IDs (`ApiId`, `ProviderId`)
    - Use `async/await` + `IAsyncEnumerable<T>` for streaming
    - Use `CancellationToken` in all async signatures
    - Use pattern matching (`switch` expressions)
-4. **Tests**: every project has a corresponding test project using xUnit
-5. **Do not modify** anything under `pi-mono/` — it is the read-only reference
-6. **Target**: .NET 8+ (cross-platform)
+5. **Tests**: every project has a corresponding test project using xUnit
+6. **Do not modify** anything under `pi-mono/` — it is the read-only reference
+7. **Target**: .NET 8+ (cross-platform)
 
 ### Project Structure
 

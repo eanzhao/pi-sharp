@@ -68,6 +68,67 @@ tui ───┴──────────────┘
 - coding-agent：依赖 ai, agent, tui
 - mom：依赖 ai, agent, coding-agent
 
+## 基础设施决策：采用 Microsoft.Extensions.AI (MEAI)
+
+经过调研，决定从一开始就采用 [Microsoft.Extensions.AI](https://learn.microsoft.com/en-us/dotnet/ai/microsoft-extensions-ai)
+作为 LLM 交互的基础层。MEAI 于 2025-05-21 GA，当前版本 10.4.x。
+
+### 为什么用 MEAI
+
+MEAI 与 pi-mono 的 `ai` 包高度重叠，可以省去大量底层工作：
+
+| pi-mono 概念 | MEAI 对应 | 匹配度 |
+|---|---|---|
+| `Message` (User/Assistant/ToolResult) | `ChatMessage` + `ChatRole` + `AIContent` 层级 | 直接映射 |
+| `TextContent` / `ImageContent` / `ThinkingContent` | `TextContent` / `ImageContent` / `TextReasoningContent` | 直接映射 |
+| `ToolCall` | `FunctionCallContent` | 直接映射 |
+| `Provider.stream()` | `IChatClient.GetStreamingResponseAsync()` | 概念匹配 |
+| `StreamOptions` (temperature, maxTokens...) | `ChatOptions` | 直接映射 |
+| `Tool` + JSON Schema | `AIFunction` + `AIFunctionFactory`（自动生成 schema） | 直接映射 |
+| 多 Provider 支持 | OpenAI / Anthropic / Google 官方 SDK 均已实现 `IChatClient` | 零 HTTP 代码 |
+
+### MEAI 不覆盖、需自建的部分
+
+| pi-mono 概念 | 差距说明 |
+|---|---|
+| 细粒度事件流 (`text_start`/`text_delta`/`text_end`...) | MEAI 只给扁平的 `IAsyncEnumerable<ChatResponseUpdate>`，需写适配层 |
+| Agent 循环（steering messages, beforeToolCall/afterToolCall 钩子） | `FunctionInvokingChatClient` 太简单，需自己写 agent loop |
+| Usage 中的 cache read/write 和费用追踪 | MEAI 的 `UsageDetails` 没有这些字段，需扩展 |
+| 每条消息上的 provider/model/timestamp 元数据 | MEAI 把这些放在 `ChatResponse` 而非 `ChatMessage` 上 |
+
+### 分层架构
+
+```
+┌─────────────────────────────────────┐
+│  PiSharp.CodingAgent / Cli / Mom    │  ← 自己写
+├─────────────────────────────────────┤
+│  PiSharp.Agent (Agent Loop + Events)│  ← 自己写，调用 IChatClient
+├─────────────────────────────────────┤
+│  PiSharp.Ai (事件适配 + 扩展类型)     │  ← 薄适配层，基于 MEAI
+├─────────────────────────────────────┤
+│  MEAI Abstractions + Middleware     │  ← 直接用
+│  (IChatClient, ChatMessage, AITool) │
+├─────────────────────────────────────┤
+│  Provider SDKs                      │  ← 直接用，已实现 IChatClient
+│  (Anthropic / OpenAI / Google)      │
+└─────────────────────────────────────┘
+```
+
+- **直接使用 MEAI**：`IChatClient` 作为 provider 接口、`ChatMessage`/`AIContent` 作为消息模型、
+  `AIFunction` 做工具定义、middleware pipeline 做日志/缓存/遥测
+- **自己在上面构建**：细粒度事件流适配器（将 `ChatResponseUpdate` 转换为 `text_start`/`text_delta`/`text_end` 等事件）、
+  Agent 循环（钩子、steering messages、上下文变换）、扩展系统
+
+### 核心 NuGet 依赖
+
+| 包 | 用途 |
+|---|---|
+| `Microsoft.Extensions.AI.Abstractions` | 核心接口和类型 (`IChatClient`, `ChatMessage`, `AIContent`) |
+| `Microsoft.Extensions.AI` | Middleware 工具 (`ChatClientBuilder`, `FunctionInvokingChatClient`, 日志/缓存) |
+| `Microsoft.Extensions.AI.OpenAI` | OpenAI / Azure OpenAI provider |
+| `Anthropic` | Anthropic 官方 SDK（内置 `IChatClient` 支持） |
+| `Google.GenAI` | Google 官方 SDK（内置 `IChatClient` 支持） |
+
 ## C# 重新实现方案
 
 ### 项目映射
@@ -97,9 +158,9 @@ pi-sharp/
 
 | 阶段 | 项目 | 要点 |
 |------|------|------|
-| 01 | `PiSharp.Ai` | 消息类型、模型定义、IProvider 接口、流式 API |
+| 01 | `PiSharp.Ai` | 基于 MEAI 的事件流适配层、扩展 Usage 类型、Provider 注册表 |
 | 02 | `PiSharp.Tui` | 终端抽象、IComponent 接口、差分渲染（与 Ai 无依赖，可并行） |
-| 03 | `PiSharp.Agent` | Agent 循环、工具类型、事件系统（依赖 Ai） |
+| 03 | `PiSharp.Agent` | Agent 循环、基于 `AIFunction` 的工具系统、事件系统（依赖 Ai） |
 | 04 | `PiSharp.CodingAgent` | 内置工具、会话管理、扩展 API（依赖 Ai + Agent + Tui） |
 | 05 | `PiSharp.Cli` | CLI 入口，串联所有模块 |
 | 06 | `PiSharp.WebUi` | Web UI 组件（依赖 Ai + Tui，Blazor / ASP.NET） |
@@ -110,98 +171,114 @@ pi-sharp/
 
 | 维度 | TypeScript (pi-mono) | C# (pi-sharp) |
 |------|----------------------|----------------|
+| LLM 基础层 | 自建多 Provider 抽象 | **MEAI** (`IChatClient`, `ChatMessage`, `AIContent`) |
+| Provider 接口 | `ApiProvider.stream()` | `IChatClient.GetStreamingResponseAsync()` (MEAI) |
+| 消息类型 | 自定义 `Message` union | MEAI `ChatMessage` + `ChatRole` + `AIContent` 层级 |
+| 工具定义 | `Tool<TSchema>` + TypeBox | MEAI `AIFunction` + `AIFunctionFactory` (自动 schema 生成) |
 | 数据型接口 | `interface` (纯数据) | `record` (不可变) 或 `class` (可变) |
-| 行为型接口 | `interface` (方法签名) | `interface` (如 `IProvider`, `IComponent`) |
+| 行为型接口 | `interface` (方法签名) | `interface` (如 `IComponent`, `IExtension`) |
 | 封闭联合类型 | 联合类型 `A \| B \| C` | 抽象 record + 派生类型 (判别联合模式) |
 | 开放联合类型 | `string & {}` / 声明合并 | 强类型 ID 包装 (如 `record ApiId(string Value)`) |
-| 泛型 | 泛型参数 + 条件类型 | 泛型参数 + 接口/类约束 (`where T : IProvider`) |
+| 泛型 | 泛型参数 + 条件类型 | 泛型参数 + 接口/类约束 |
 | 错误处理 | try/catch + Result | 异常 + `Result<T>` 模式 (可选) |
 | 异步 | async/await + AsyncIterable | `async/await` + `Task<T>` + `IAsyncEnumerable<T>` |
 | 序列化 | JSON 原生 | `System.Text.Json` (源生成器优化) |
 | 扩展机制 | 动态导入 + 声明合并 | 依赖注入 + 插件接口 + `Assembly.Load` |
+| 中间件 | 无（自建） | MEAI `ChatClientBuilder` pipeline (日志/缓存/遥测) |
 | 编译目标 | Node.js / 浏览器 | .NET 8+ (跨平台) |
 | 包管理 | npm workspaces | .NET Solution + 多项目引用 |
-| 包配置文件 | package.json | `.csproj` |
-| 测试框架 | Vitest | xUnit / NUnit |
+| 测试框架 | Vitest | xUnit |
 | 代码质量 | Biome | dotnet format + Roslyn 分析器 |
 
-### TypeScript → C# 映射详解
+### TypeScript → C# 映射详解（基于 MEAI）
 
-**数据型 vs 行为型接口**
+**Provider 接口：直接使用 MEAI 的 IChatClient**
 
-pi-mono 中大部分 `interface` 是纯数据形状（如 `StreamOptions`, `Tool`, `Context`,
-`ThinkingBudgets`），应映射为 C# `record`（不可变）或 `class`（需要可变性时）。
-只有需要多态行为的接口（如 `ApiProvider` 的 `stream()` 方法、TUI 的 `Component.render()`）
-才映射为 C# `interface`。
+pi-mono 自建了 `ApiProvider` 接口和 13+ 个 HTTP 级 provider 实现。
+在 pi-sharp 中，直接使用 MEAI 的 `IChatClient`，各 provider SDK 已实现：
 
 ```csharp
-// 数据型 → record
-public record StreamOptions(
-    double? Temperature = null,
-    int? MaxTokens = null,
-    IReadOnlyList<string>? Stop = null
-);
+// 不需要自建 IProvider —— 直接用 MEAI 的 IChatClient
+using Anthropic;
+using Microsoft.Extensions.AI;
 
-// 行为型 → interface
-public interface IProvider
-{
-    IAsyncEnumerable<AssistantMessageEvent> StreamAsync(
-        Model model, Context context, StreamOptions options,
-        CancellationToken ct = default);
-}
+// Anthropic
+IChatClient anthropic = new AnthropicClient("sk-...").AsIChatClient("claude-opus-4-6");
+
+// OpenAI
+IChatClient openai = new OpenAIClient("sk-...").AsChatClient("gpt-4o");
+
+// 加上 middleware pipeline
+IChatClient client = new ChatClientBuilder(anthropic)
+    .UseOpenTelemetry()
+    .UseLogging()
+    .Build();
 ```
 
-**封闭 vs 开放联合**
+**消息模型：使用 MEAI 的 ChatMessage + AIContent**
 
-封闭联合（如 `Message`, `AssistantMessageEvent`, `StopReason`）用抽象 record + 派生类型：
+pi-mono 的 `Message` 联合类型直接映射到 MEAI 的 `ChatMessage`：
 
 ```csharp
-public abstract record Message
-{
-    public sealed record User(UserMessage Content) : Message;
-    public sealed record Assistant(AssistantMessage Content) : Message;
-    public sealed record ToolResult(ToolResultMessage Content) : Message;
-}
+// pi-mono: new UserMessage([{ type: "text", text: "Hello" }])
+// pi-sharp (MEAI):
+var userMsg = new ChatMessage(ChatRole.User, "Hello");
 
-// 配合 switch 表达式进行模式匹配
-var text = message switch
-{
-    Message.User u => u.Content.Text,
-    Message.Assistant a => a.Content.Text,
-    Message.ToolResult t => t.Content.Output,
-    _ => throw new InvalidOperationException()
-};
+// 带图片的消息
+var multiModal = new ChatMessage(ChatRole.User, [
+    new TextContent("What's in this image?"),
+    new ImageContent(imageBytes, "image/png")
+]);
+
+// 工具结果
+var toolResult = new ChatMessage(ChatRole.Tool, [
+    new FunctionResultContent("call_123", "get_weather", result: "Sunny, 25°C")
+]);
 ```
 
-开放联合（如 `Api` 和 `Provider` 类型允许任意字符串扩展）用强类型 ID：
+**工具定义：使用 MEAI 的 AIFunction**
+
+pi-mono 用 TypeBox 手写 JSON Schema，MEAI 从 .NET 方法自动生成：
 
 ```csharp
-public readonly record struct ApiId(string Value)
-{
-    public static readonly ApiId OpenAI = new("openai");
-    public static readonly ApiId Anthropic = new("anthropic");
-    // 允许任意扩展
-    public static implicit operator ApiId(string value) => new(value);
-}
+// pi-mono: 手写 { type: "object", properties: { city: { type: "string" } } }
+// pi-sharp (MEAI): 自动从方法签名生成 schema
+AIFunction weatherTool = AIFunctionFactory.Create(
+    (string city) => $"Weather in {city}: sunny, 25°C",
+    "get_weather",
+    "Gets the current weather for a city");
 ```
 
-**异步与事件流**
+**流式 API：MEAI 基础 + 自建事件适配层**
 
-pi-mono 的核心流式 API 基于 `AsyncIterable<AssistantMessageEvent>`。
-C# 有原生的 `IAsyncEnumerable<T>` 支持，天然适配：
+MEAI 提供扁平的 `IAsyncEnumerable<ChatResponseUpdate>`，
+PiSharp.Ai 在此之上构建细粒度事件流：
 
 ```csharp
-public interface IProvider
+// MEAI 底层：扁平 update 流
+await foreach (var update in client.GetStreamingResponseAsync(messages, options))
 {
-    IAsyncEnumerable<AssistantMessageEvent> StreamAsync(
-        Model model,
-        Context context,
-        StreamOptions? options = null,
-        CancellationToken ct = default);
+    Console.Write(update.Text);
 }
 
-// 消费端
-await foreach (var evt in provider.StreamAsync(model, ctx))
+// PiSharp.Ai 适配层：细粒度事件（自建）
+public abstract record AssistantMessageEvent
+{
+    public sealed record TextStart : AssistantMessageEvent;
+    public sealed record TextDelta(string Text) : AssistantMessageEvent;
+    public sealed record TextEnd : AssistantMessageEvent;
+    public sealed record ThinkingStart : AssistantMessageEvent;
+    public sealed record ThinkingDelta(string Text) : AssistantMessageEvent;
+    public sealed record ThinkingEnd : AssistantMessageEvent;
+    public sealed record ToolCallStart(string CallId, string Name) : AssistantMessageEvent;
+    public sealed record ToolCallDelta(string CallId, string ArgumentsDelta) : AssistantMessageEvent;
+    public sealed record ToolCallEnd(string CallId) : AssistantMessageEvent;
+    public sealed record Done(ChatFinishReason? FinishReason, UsageDetails? Usage) : AssistantMessageEvent;
+    public sealed record Error(Exception Exception) : AssistantMessageEvent;
+}
+
+// 适配器：将 MEAI 的扁平流转换为细粒度事件流
+await foreach (var evt in StreamAdapter.ToEvents(client, messages, options))
 {
     switch (evt)
     {
@@ -213,14 +290,42 @@ await foreach (var evt in provider.StreamAsync(model, ctx))
 }
 ```
 
+**封闭联合（非 MEAI 部分）**
+
+TUI 组件、Agent 事件等 pi-sharp 自建类型仍使用抽象 record + sealed 派生类型：
+
+```csharp
+public abstract record AgentEvent
+{
+    public sealed record AgentStart : AgentEvent;
+    public sealed record TurnStart(int Turn) : AgentEvent;
+    public sealed record ToolExecutionStart(string ToolName, string CallId) : AgentEvent;
+    public sealed record ToolExecutionEnd(string ToolName, string CallId) : AgentEvent;
+    public sealed record TurnEnd(int Turn) : AgentEvent;
+    public sealed record AgentEnd : AgentEvent;
+}
+```
+
+**开放联合**
+
+Api/Provider 标识符等开放类型用强类型 ID 包装：
+
+```csharp
+public readonly record struct ApiId(string Value)
+{
+    public static readonly ApiId OpenAI = new("openai");
+    public static readonly ApiId Anthropic = new("anthropic");
+    public static implicit operator ApiId(string value) => new(value);
+}
+```
+
 ### 扩展机制设计
 
 pi-mono 的扩展系统是其核心特性之一，涉及三个层面：
 
 1. **声明合并**（`CustomAgentMessages`）— TypeScript 特有，允许第三方扩展消息类型。
-   C# 没有声明合并，采用 **注册表模式 + 依赖注入**：通过
-   `IServiceCollection` 注册自定义消息反序列化器，或维护
-   `Dictionary<string, Func<JsonElement, AgentMessage>>` 反序列化表。
+   C# 没有声明合并，但 MEAI 的 `AIContent` 支持 `[JsonPolymorphic]` 多态序列化，
+   可通过子类化 `AIContent` 自定义内容类型。同时采用 **注册表模式 + 依赖注入** 注册自定义消息。
 
 2. **动态加载**（`extensions/loader.ts`）— TypeScript 通过 `import()` 动态加载扩展模块。
    C# 可通过 `Assembly.LoadFrom()` 加载 DLL 插件，或使用 `MEF`
