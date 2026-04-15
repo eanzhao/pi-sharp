@@ -8,9 +8,9 @@ A learning project that rebuilds pi-mono's architecture in C#, project by projec
 
 | Project | Status | Description |
 |---------|--------|-------------|
-| `PiSharp.Ai` | Planned | Unified multi-provider LLM API |
-| `PiSharp.Agent` | Planned | Agent loop, tool calling, state management |
-| `PiSharp.Tui` | Planned | Terminal UI with differential rendering |
+| `PiSharp.Ai` | Implemented | Unified multi-provider LLM API |
+| `PiSharp.Agent` | Implemented | Agent loop, tool calling, state management |
+| `PiSharp.Tui` | Implemented | Terminal UI with differential rendering |
 | `PiSharp.CodingAgent` | Planned | Coding agent with built-in tools and extensions |
 | `PiSharp.WebUi` | Planned | Web chat UI components |
 | `PiSharp.Mom` | Planned | Slack bot integration |
@@ -58,6 +58,9 @@ pi-sharp/
 Each implementation phase has a corresponding document in `docs/`:
 
 - [00 - Project Overview](docs/00-project-overview.md) — Architecture analysis and implementation plan
+- [01 - PiSharp.Ai](docs/01-ai-layer.md) — MEAI-based stream adapter, usage, registries
+- [02 - PiSharp.Tui](docs/02-tui.md) — terminal UI foundation and differential rendering
+- [03 - PiSharp.Agent](docs/03-agent.md) — agent loop, tool execution, stateful wrapper
 
 ## Reference
 

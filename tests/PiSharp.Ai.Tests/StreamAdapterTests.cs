@@ -123,6 +123,122 @@ public sealed class StreamAdapterTests
             });
     }
 
+    [Fact]
+    public async Task ToEventsAsync_EmitsDoneOnly_WhenStreamIsEmpty()
+    {
+        var updates = CreateAsyncEnumerable();
+
+        var events = await ReadAllAsync(StreamAdapter.ToEvents(updates));
+
+        var done = Assert.IsType<AssistantMessageEvent.Done>(Assert.Single(events));
+        Assert.Null(done.FinishReason);
+        Assert.Null(done.Usage);
+    }
+
+    [Fact]
+    public async Task ToEventsAsync_EmitsDoneWithNullUsage_WhenNoUsageContentPresent()
+    {
+        var updates = CreateAsyncEnumerable(
+            CreateUpdate(new TextContent("hello"), ChatFinishReason.Stop));
+
+        var events = await ReadAllAsync(StreamAdapter.ToEvents(updates));
+
+        Assert.Collection(
+            events,
+            @event => Assert.IsType<AssistantMessageEvent.TextStart>(@event),
+            @event => Assert.Equal("hello", Assert.IsType<AssistantMessageEvent.TextDelta>(@event).Text),
+            @event => Assert.IsType<AssistantMessageEvent.TextEnd>(@event),
+            @event =>
+            {
+                var done = Assert.IsType<AssistantMessageEvent.Done>(@event);
+                Assert.Equal(ChatFinishReason.Stop, done.FinishReason);
+                Assert.Null(done.Usage);
+            });
+    }
+
+    [Fact]
+    public async Task ToEventsAsync_HandlesMultipleToolCallsWithDistinctCallIds()
+    {
+        var updates = CreateAsyncEnumerable(
+            CreateUpdate(
+                new FunctionCallContent(
+                    "call-1",
+                    "read_file",
+                    new Dictionary<string, object?> { ["path"] = "a.txt" })),
+            CreateUpdate(
+                new FunctionCallContent(
+                    "call-2",
+                    "write_file",
+                    new Dictionary<string, object?> { ["path"] = "b.txt" }),
+                finishReason: ChatFinishReason.ToolCalls));
+
+        var events = await ReadAllAsync(StreamAdapter.ToEvents(updates));
+
+        Assert.Collection(
+            events,
+            @event =>
+            {
+                var start = Assert.IsType<AssistantMessageEvent.ToolCallStart>(@event);
+                Assert.Equal("call-1", start.CallId);
+                Assert.Equal("read_file", start.Name);
+            },
+            @event => Assert.IsType<AssistantMessageEvent.ToolCallDelta>(@event),
+            @event =>
+            {
+                var end = Assert.IsType<AssistantMessageEvent.ToolCallEnd>(@event);
+                Assert.Equal("call-1", end.CallId);
+            },
+            @event =>
+            {
+                var start = Assert.IsType<AssistantMessageEvent.ToolCallStart>(@event);
+                Assert.Equal("call-2", start.CallId);
+                Assert.Equal("write_file", start.Name);
+            },
+            @event => Assert.IsType<AssistantMessageEvent.ToolCallDelta>(@event),
+            @event =>
+            {
+                var end = Assert.IsType<AssistantMessageEvent.ToolCallEnd>(@event);
+                Assert.Equal("call-2", end.CallId);
+            },
+            @event => Assert.IsType<AssistantMessageEvent.Done>(@event));
+    }
+
+    [Fact]
+    public async Task ToEventsAsync_SkipsEmptyTextContent()
+    {
+        var updates = CreateAsyncEnumerable(
+            CreateUpdate(new TextContent("")),
+            CreateUpdate(new TextContent("real")),
+            CreateUpdate(new TextContent(""), ChatFinishReason.Stop));
+
+        var events = await ReadAllAsync(StreamAdapter.ToEvents(updates));
+
+        Assert.Collection(
+            events,
+            @event => Assert.IsType<AssistantMessageEvent.TextStart>(@event),
+            @event => Assert.Equal("real", Assert.IsType<AssistantMessageEvent.TextDelta>(@event).Text),
+            @event => Assert.IsType<AssistantMessageEvent.TextEnd>(@event),
+            @event => Assert.IsType<AssistantMessageEvent.Done>(@event));
+    }
+
+    [Fact]
+    public async Task ToEventsAsync_AccumulatesUsageAcrossMultipleUpdates()
+    {
+        var updates = CreateAsyncEnumerable(
+            CreateUpdate(
+                new UsageContent(new UsageDetails { InputTokenCount = 10 })),
+            CreateUpdate(
+                [new UsageContent(new UsageDetails { OutputTokenCount = 5 })],
+                ChatFinishReason.Stop));
+
+        var events = await ReadAllAsync(StreamAdapter.ToEvents(updates));
+
+        var done = Assert.IsType<AssistantMessageEvent.Done>(Assert.Single(events));
+        Assert.NotNull(done.Usage);
+        Assert.Equal(10, done.Usage!.InputTokenCount);
+        Assert.Equal(5, done.Usage.OutputTokenCount);
+    }
+
     private static ChatResponseUpdate CreateUpdate(
         params AIContent[] contents) =>
         CreateUpdate(contents.AsEnumerable(), null);
