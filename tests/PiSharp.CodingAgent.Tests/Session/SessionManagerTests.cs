@@ -1,3 +1,4 @@
+using Microsoft.Extensions.AI;
 using PiSharp.CodingAgent;
 
 namespace PiSharp.CodingAgent.Tests;
@@ -155,8 +156,8 @@ public sealed class SessionManagerTests : IDisposable
         var ctx = manager.BuildContext();
 
         Assert.Equal(2, ctx.Messages.Count);
-        Assert.Equal("q1", ctx.Messages[0].Text);
-        Assert.Equal("a1", ctx.Messages[1].Text);
+        Assert.Equal("q1", ExtractText(ctx.Messages[0]));
+        Assert.Equal("a1", ExtractText(ctx.Messages[1]));
         Assert.Equal("high", ctx.ThinkingLevel);
         Assert.Equal("anthropic", ctx.ProviderId);
         Assert.Equal("claude", ctx.ModelId);
@@ -182,8 +183,8 @@ public sealed class SessionManagerTests : IDisposable
         var ctx = manager.BuildContext();
 
         Assert.Equal(2, ctx.Messages.Count);
-        Assert.Equal("Previous: discussed old topic", ctx.Messages[0].Text);
-        Assert.Equal("new msg", ctx.Messages[1].Text);
+        Assert.Equal("Previous: discussed old topic", ExtractText(ctx.Messages[0]));
+        Assert.Equal("new msg", ExtractText(ctx.Messages[1]));
     }
 
     [Fact]
@@ -194,4 +195,74 @@ public sealed class SessionManagerTests : IDisposable
 
         Assert.Throws<KeyNotFoundException>(() => manager.SetLeaf("nonexistent"));
     }
+
+    [Fact]
+    public void BuildContext_RoundTripsToolMessages()
+    {
+        var manager = new SessionManager(_tempDir, "/tmp");
+        manager.NewSession(providerId: "openai", modelId: "gpt-4.1-mini", systemPrompt: "system", toolNames: ["read"]);
+
+        var assistant = new ChatMessage(
+            ChatRole.Assistant,
+            [
+                new FunctionCallContent(
+                    "call-1",
+                    "read",
+                    new Dictionary<string, object?>
+                    {
+                        ["path"] = "README.md",
+                    }),
+            ]);
+        var tool = new ChatMessage(ChatRole.Tool, [new FunctionResultContent("call-1", "file contents")]);
+
+        manager.AppendEntry(SessionMessageEntry.FromChatMessage(assistant));
+        manager.AppendEntry(SessionMessageEntry.FromChatMessage(tool));
+
+        var context = manager.BuildContext();
+
+        Assert.Equal("system", context.SystemPrompt);
+        Assert.Equal(["read"], context.ToolNames);
+        Assert.IsType<FunctionCallContent>(Assert.Single(context.Messages[0].Contents));
+        var result = Assert.IsType<FunctionResultContent>(Assert.Single(context.Messages[1].Contents));
+        Assert.Equal("file contents", result.Result?.ToString());
+    }
+
+    [Fact]
+    public async Task ResolveSessionFile_SupportsLatestAliasAndId()
+    {
+        var manager = new SessionManager(_tempDir, "/tmp");
+        var sessionId = manager.NewSession();
+        await Task.Delay(5);
+
+        var latestPath = manager.ResolveSessionFile("latest");
+        var idPath = manager.ResolveSessionFile(sessionId);
+
+        Assert.Equal(manager.SessionFile, latestPath);
+        Assert.Equal(manager.SessionFile, idPath);
+    }
+
+    [Fact]
+    public async Task UpdateHeader_RewritesPersistedMetadata()
+    {
+        var manager = new SessionManager(_tempDir, "/tmp");
+        manager.NewSession(providerId: "openai");
+        manager.AppendEntry(new SessionMessageEntry
+        {
+            Id = "m1",
+            Timestamp = SessionEntry.Now(),
+            Role = "user",
+            Text = "hello",
+        });
+
+        manager.UpdateHeader(header => header with { ProviderId = "anthropic", ModelId = "claude" });
+
+        var reloaded = new SessionManager(_tempDir, "/tmp");
+        await reloaded.LoadSessionAsync(manager.SessionFile!);
+
+        Assert.Equal("anthropic", reloaded.Header!.ProviderId);
+        Assert.Equal("claude", reloaded.Header.ModelId);
+    }
+
+    private static string? ExtractText(ChatMessage message) =>
+        message.Contents.OfType<TextContent>().FirstOrDefault()?.Text;
 }

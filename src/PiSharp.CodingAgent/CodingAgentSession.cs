@@ -39,6 +39,8 @@ public sealed class CodingAgentSessionOptions
 
     public string? AppendSystemPrompt { get; init; }
 
+    public string? OverrideSystemPrompt { get; init; }
+
     public CodingAgentToolOptions? ToolOptions { get; init; }
 
     public AgentMessageTransform? ConvertToLlm { get; init; }
@@ -184,17 +186,19 @@ public sealed class CodingAgentSession : IDisposable
         }
 
         var finalTools = BuildFinalTools(activeToolNames, allBuiltInTools, builder.AdditionalTools);
-        var systemPrompt = CodingAgentSystemPrompt.Build(
-            new BuildSystemPromptOptions
-            {
-                CustomPrompt = builder.CustomSystemPrompt,
-                AppendSystemPrompt = builder.AppendSystemPrompt,
-                WorkingDirectory = workingDirectory,
-                ContextFiles = builder.ContextFiles.ToArray(),
-                PromptGuidelines = builder.PromptGuidelines.ToArray(),
-                SelectedTools = finalTools.Select(static tool => tool.Name).ToArray(),
-                ToolSnippets = toolSnippets,
-            });
+        var systemPrompt = string.IsNullOrWhiteSpace(options.OverrideSystemPrompt)
+            ? CodingAgentSystemPrompt.Build(
+                new BuildSystemPromptOptions
+                {
+                    CustomPrompt = builder.CustomSystemPrompt,
+                    AppendSystemPrompt = builder.AppendSystemPrompt,
+                    WorkingDirectory = workingDirectory,
+                    ContextFiles = builder.ContextFiles.ToArray(),
+                    PromptGuidelines = builder.PromptGuidelines.ToArray(),
+                    SelectedTools = finalTools.Select(static tool => tool.Name).ToArray(),
+                    ToolSnippets = toolSnippets,
+                })
+            : options.OverrideSystemPrompt!;
 
         var agent = new AgentRuntime(
             chatClient,

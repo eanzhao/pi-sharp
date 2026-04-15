@@ -37,13 +37,21 @@ public sealed class CliArguments
 
     public IReadOnlyList<string> AppendSystemPromptInputs { get; init; } = Array.Empty<string>();
 
-    public ThinkingLevel ThinkingLevel { get; init; } = ThinkingLevel.Off;
+    public ThinkingLevel? ThinkingLevel { get; init; }
 
     public bool NoTools { get; init; }
 
     public IReadOnlyList<string>? Tools { get; init; }
 
     public bool NoContextFiles { get; init; }
+
+    public string? SessionDirectory { get; init; }
+
+    public string? ResumeSession { get; init; }
+
+    public string? ForkSession { get; init; }
+
+    public bool NoSession { get; init; }
 
     public IReadOnlyList<string> Messages { get; init; } = Array.Empty<string>();
 
@@ -86,9 +94,13 @@ public static class CliArgumentsParser
         string? apiKey = null;
         string? workingDirectory = null;
         string? systemPrompt = null;
-        var thinkingLevel = ThinkingLevel.Off;
+        ThinkingLevel? thinkingLevel = null;
         var noTools = false;
         var noContextFiles = false;
+        var sessionDirectory = (string?)null;
+        var resumeSession = (string?)null;
+        var forkSession = (string?)null;
+        var noSession = false;
 
         for (var index = 0; index < args.Count; index++)
         {
@@ -177,13 +189,17 @@ public static class CliArgumentsParser
                 var value = ReadRequiredValue(args, ref index, argument, diagnostics);
                 if (value is not null)
                 {
-                    if (!ThinkingLevels.TryGetValue(value, out thinkingLevel))
+                    if (!ThinkingLevels.TryGetValue(value, out ThinkingLevel parsedThinkingLevel))
                     {
                         diagnostics.Add(
                             new CliDiagnostic(
                                 CliDiagnosticSeverity.Warning,
                                 $"Invalid thinking level '{value}'. Valid values: {string.Join(", ", ThinkingLevels.Keys)}."));
-                        thinkingLevel = ThinkingLevel.Off;
+                        thinkingLevel = null;
+                    }
+                    else
+                    {
+                        thinkingLevel = parsedThinkingLevel;
                     }
                 }
 
@@ -227,6 +243,30 @@ public static class CliArgumentsParser
                 continue;
             }
 
+            if (argument == "--session-dir")
+            {
+                sessionDirectory = ReadRequiredValue(args, ref index, argument, diagnostics);
+                continue;
+            }
+
+            if (argument == "--resume")
+            {
+                resumeSession = ReadRequiredValue(args, ref index, argument, diagnostics);
+                continue;
+            }
+
+            if (argument == "--fork")
+            {
+                forkSession = ReadRequiredValue(args, ref index, argument, diagnostics);
+                continue;
+            }
+
+            if (argument == "--no-session")
+            {
+                noSession = true;
+                continue;
+            }
+
             if (argument.StartsWith("@", StringComparison.Ordinal))
             {
                 fileArguments.Add(argument[1..]);
@@ -247,6 +287,16 @@ public static class CliArgumentsParser
             diagnostics.Add(new CliDiagnostic(CliDiagnosticSeverity.Error, "--tools cannot be combined with --no-tools."));
         }
 
+        if (!string.IsNullOrWhiteSpace(resumeSession) && !string.IsNullOrWhiteSpace(forkSession))
+        {
+            diagnostics.Add(new CliDiagnostic(CliDiagnosticSeverity.Error, "--resume cannot be combined with --fork."));
+        }
+
+        if (noSession && (!string.IsNullOrWhiteSpace(resumeSession) || !string.IsNullOrWhiteSpace(forkSession)))
+        {
+            diagnostics.Add(new CliDiagnostic(CliDiagnosticSeverity.Error, "--no-session cannot be combined with --resume or --fork."));
+        }
+
         return new CliArguments
         {
             Help = help,
@@ -265,6 +315,10 @@ public static class CliArgumentsParser
             NoTools = noTools,
             Tools = tools,
             NoContextFiles = noContextFiles,
+            SessionDirectory = sessionDirectory,
+            ResumeSession = resumeSession,
+            ForkSession = forkSession,
+            NoSession = noSession,
             Messages = messages,
             FileArguments = fileArguments,
             Diagnostics = diagnostics,
@@ -289,6 +343,10 @@ Options:
   --no-tools                     Disable all built-in tools
   --no-context-files             Disable AGENTS.md / CLAUDE.md loading
   --thinking <level>             off, minimal, low, medium, high, xhigh
+  --session-dir <dir>            Override the persisted session directory
+  --resume <id-or-path>          Resume a persisted session
+  --fork <id-or-path>            Fork a persisted session into a new session
+  --no-session                   Disable session persistence for this run
   --list-models [pattern]        List known models, optionally filtered
   --print, -p                    Print mode (current default behavior)
   --verbose                      Print tool execution diagnostics to stderr
@@ -297,7 +355,9 @@ Options:
 
 Examples:
   {appName} "Summarize the repository"
+  {appName}                      Start interactive mode when stdin is a TTY
   {appName} --model gpt-4.1-mini --tools read,grep,find "Find failing tests"
+  {appName} --resume latest --print "Continue the last session"
   cat error.log | {appName} --append-system-prompt AGENTS.md "Debug this"
 """;
 

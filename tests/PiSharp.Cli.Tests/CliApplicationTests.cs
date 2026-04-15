@@ -1,5 +1,7 @@
 using Microsoft.Extensions.AI;
 using PiSharp.Ai;
+using PiSharp.CodingAgent;
+using PiSharp.Tui;
 
 namespace PiSharp.Cli.Tests;
 
@@ -21,9 +23,9 @@ public sealed class CliApplicationTests : IDisposable
                 CreateUpdate(new TextContent("done"), ChatFinishReason.Stop),
             ]);
 
-        var providerCatalog = new CliProviderCatalog(
+        var providerCatalog = new CodingAgentProviderCatalog(
             [
-                new CliProviderFactory
+                new CodingAgentProviderFactory
                 {
                     Configuration = new ProviderConfiguration(
                         ProviderId.OpenAi,
@@ -53,7 +55,7 @@ public sealed class CliApplicationTests : IDisposable
             error,
             repoDirectory,
             isInputRedirected: false,
-            new Dictionary<string, string?>
+            environmentVariables: new Dictionary<string, string?>
             {
                 ["OPENAI_API_KEY"] = "test-key",
             });
@@ -73,9 +75,9 @@ public sealed class CliApplicationTests : IDisposable
     {
         var output = new StringWriter();
         var error = new StringWriter();
-        var providerCatalog = new CliProviderCatalog(
+        var providerCatalog = new CodingAgentProviderCatalog(
             [
-                new CliProviderFactory
+                new CodingAgentProviderFactory
                 {
                     Configuration = new ProviderConfiguration(
                         ProviderId.OpenAi,
@@ -115,6 +117,203 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Contains("gpt-4.1-mini", output.ToString());
     }
 
+    [Fact]
+    public async Task RunAsync_ResumesPersistedSessionFromId()
+    {
+        var repoDirectory = Path.Combine(_rootDirectory, "resume-repo");
+        Directory.CreateDirectory(repoDirectory);
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var fakeClient = new FakeChatClient(
+            [CreateUpdate(new TextContent("first"), ChatFinishReason.Stop)],
+            [CreateUpdate(new TextContent("second"), ChatFinishReason.Stop)]);
+
+        var environment = new CliEnvironment(
+            new StringReader(string.Empty),
+            output,
+            error,
+            repoDirectory,
+            isInputRedirected: false,
+            environmentVariables: new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "test-key",
+            });
+
+        var application = new CliApplication(environment, CreateProviderCatalog(fakeClient));
+
+        var firstExitCode = await application.RunAsync(["hello"]);
+        Assert.Equal(0, firstExitCode);
+
+        var sessionDirectory = Path.Combine(repoDirectory, ".pi-sharp", "sessions");
+        var sessionFile = Assert.Single(Directory.GetFiles(sessionDirectory, "*.jsonl"));
+
+        var manager = new SessionManager(sessionDirectory, repoDirectory);
+        await manager.LoadSessionAsync(sessionFile);
+
+        output.GetStringBuilder().Clear();
+        var secondExitCode = await application.RunAsync(["--resume", manager.Header!.Id, "again"]);
+
+        Assert.Equal(0, secondExitCode);
+        Assert.Equal(2, fakeClient.Requests.Count);
+        Assert.Contains(fakeClient.Requests[1], message => message.Role == ChatRole.User && message.Text == "hello");
+        Assert.Contains(fakeClient.Requests[1], message => message.Role == ChatRole.Assistant && message.Text == "first");
+    }
+
+    [Fact]
+    public async Task RunAsync_ForksPersistedSessionIntoNewFile()
+    {
+        var repoDirectory = Path.Combine(_rootDirectory, "fork-repo");
+        Directory.CreateDirectory(repoDirectory);
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var fakeClient = new FakeChatClient(
+            [CreateUpdate(new TextContent("root"), ChatFinishReason.Stop)],
+            [CreateUpdate(new TextContent("branch"), ChatFinishReason.Stop)]);
+
+        var environment = new CliEnvironment(
+            new StringReader(string.Empty),
+            output,
+            error,
+            repoDirectory,
+            isInputRedirected: false,
+            environmentVariables: new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "test-key",
+            });
+
+        var application = new CliApplication(environment, CreateProviderCatalog(fakeClient));
+
+        Assert.Equal(0, await application.RunAsync(["seed"]));
+
+        var sessionDirectory = Path.Combine(repoDirectory, ".pi-sharp", "sessions");
+        var originalSessionFile = Assert.Single(Directory.GetFiles(sessionDirectory, "*.jsonl"));
+        var sourceManager = new SessionManager(sessionDirectory, repoDirectory);
+        await sourceManager.LoadSessionAsync(originalSessionFile);
+
+        Assert.Equal(0, await application.RunAsync(["--fork", sourceManager.Header!.Id, "branch"]));
+
+        var sessionFiles = Directory.GetFiles(sessionDirectory, "*.jsonl");
+        Assert.Equal(2, sessionFiles.Length);
+
+        var forkedSessionFile = sessionFiles.Single(path => !string.Equals(path, originalSessionFile, StringComparison.Ordinal));
+        var forkedManager = new SessionManager(sessionDirectory, repoDirectory);
+        await forkedManager.LoadSessionAsync(forkedSessionFile);
+
+        Assert.Equal(sourceManager.Header.Id, forkedManager.Header!.ParentSession);
+
+        var context = forkedManager.BuildContext();
+        Assert.Contains(context.Messages, message => message.Role == ChatRole.User && message.Text == "seed");
+        Assert.Contains(context.Messages, message => message.Role == ChatRole.Assistant && message.Text == "root");
+        Assert.Contains(context.Messages, message => message.Role == ChatRole.User && message.Text == "branch");
+    }
+
+    [Fact]
+    public async Task RunAsync_StartsInteractiveModeWhenTerminalHasNoInitialPrompt()
+    {
+        var repoDirectory = Path.Combine(_rootDirectory, "interactive-repo");
+        Directory.CreateDirectory(repoDirectory);
+
+        var terminal = new FakeTerminal(80, 12);
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var keys = new Queue<ConsoleKeyInfo>(
+        [
+            new ConsoleKeyInfo('h', ConsoleKey.H, false, false, false),
+            new ConsoleKeyInfo('i', ConsoleKey.I, false, false, false),
+            new ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false),
+            new ConsoleKeyInfo('/', ConsoleKey.Oem2, false, false, false),
+            new ConsoleKeyInfo('e', ConsoleKey.E, false, false, false),
+            new ConsoleKeyInfo('x', ConsoleKey.X, false, false, false),
+            new ConsoleKeyInfo('i', ConsoleKey.I, false, false, false),
+            new ConsoleKeyInfo('t', ConsoleKey.T, false, false, false),
+            new ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false),
+        ]);
+
+        var fakeClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("he")),
+                CreateUpdate(new TextContent("llo"), ChatFinishReason.Stop),
+            ]);
+
+        var environment = new CliEnvironment(
+            new StringReader(string.Empty),
+            output,
+            error,
+            repoDirectory,
+            isInputRedirected: false,
+            isOutputRedirected: false,
+            environmentVariables: new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "test-key",
+            },
+            terminal: terminal,
+            readKey: _ => keys.Dequeue());
+
+        var application = new CliApplication(environment, CreateProviderCatalog(fakeClient));
+
+        var exitCode = await application.RunAsync(Array.Empty<string>());
+
+        Assert.Equal(0, exitCode);
+        Assert.Single(fakeClient.Requests);
+        Assert.Contains(terminal.Writes, write => write.Contains("PiSharp", StringComparison.Ordinal));
+        Assert.Contains(terminal.Writes, write => write.Contains("Assistant> hello", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunAsync_ReturnsErrorForMissingResumeSession()
+    {
+        var repoDirectory = Path.Combine(_rootDirectory, "missing-resume-repo");
+        Directory.CreateDirectory(repoDirectory);
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var environment = new CliEnvironment(
+            new StringReader(string.Empty),
+            output,
+            error,
+            repoDirectory,
+            isInputRedirected: false,
+            environmentVariables: new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "test-key",
+            });
+
+        var application = new CliApplication(environment, CreateProviderCatalog(new FakeChatClient()));
+        var exitCode = await application.RunAsync(["--resume", "missing", "hello"]);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("not found", error.ToString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient fakeClient) =>
+        new(
+        [
+            new CodingAgentProviderFactory
+            {
+                Configuration = new ProviderConfiguration(
+                    ProviderId.OpenAi,
+                    ApiId.OpenAi,
+                    "OpenAI",
+                    DefaultModelId: "gpt-4.1-mini",
+                    ApiKeyEnvironmentVariable: "OPENAI_API_KEY"),
+                KnownModels =
+                [
+                    new ModelMetadata(
+                        "gpt-4.1-mini",
+                        "GPT-4.1 mini",
+                        ApiId.OpenAi,
+                        ProviderId.OpenAi,
+                        1_000_000,
+                        32_768,
+                        ModelCapability.TextInput | ModelCapability.Streaming | ModelCapability.ToolCalling,
+                        ModelPricing.Free),
+                ],
+                CreateChatClient = (_, _) => fakeClient,
+            },
+        ]);
+
     private static ChatResponseUpdate CreateUpdate(
         AIContent content,
         ChatFinishReason? finishReason = null) =>
@@ -128,6 +327,20 @@ public sealed class CliApplicationTests : IDisposable
         if (Directory.Exists(_rootDirectory))
         {
             Directory.Delete(_rootDirectory, recursive: true);
+        }
+    }
+
+    private sealed class FakeTerminal(int columns, int rows) : ITerminal
+    {
+        public TerminalSize Size { get; } = new(columns, rows);
+
+        public List<string> Writes { get; } = [];
+
+        public ValueTask WriteAsync(string output, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Writes.Add(output);
+            return ValueTask.CompletedTask;
         }
     }
 }

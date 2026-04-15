@@ -3,12 +3,14 @@ using Microsoft.Extensions.AI;
 using PiSharp.Agent;
 using PiSharp.Ai;
 using PiSharp.CodingAgent;
+using PiSharp.Tui;
 
 namespace PiSharp.Cli;
 
 public sealed class CliEnvironment
 {
     private readonly IReadOnlyDictionary<string, string?>? _environmentVariables;
+    private readonly Func<bool, ConsoleKeyInfo>? _readKey;
 
     public CliEnvironment(
         TextReader input,
@@ -16,14 +18,20 @@ public sealed class CliEnvironment
         TextWriter error,
         string currentDirectory,
         bool isInputRedirected,
-        IReadOnlyDictionary<string, string?>? environmentVariables = null)
+        bool isOutputRedirected = false,
+        IReadOnlyDictionary<string, string?>? environmentVariables = null,
+        ITerminal? terminal = null,
+        Func<bool, ConsoleKeyInfo>? readKey = null)
     {
         Input = input ?? throw new ArgumentNullException(nameof(input));
         Output = output ?? throw new ArgumentNullException(nameof(output));
         Error = error ?? throw new ArgumentNullException(nameof(error));
         CurrentDirectory = Path.GetFullPath(currentDirectory ?? throw new ArgumentNullException(nameof(currentDirectory)));
         IsInputRedirected = isInputRedirected;
+        IsOutputRedirected = isOutputRedirected;
         _environmentVariables = environmentVariables;
+        Terminal = terminal ?? new ProcessTerminal(output);
+        _readKey = readKey;
     }
 
     public TextReader Input { get; }
@@ -35,6 +43,12 @@ public sealed class CliEnvironment
     public string CurrentDirectory { get; }
 
     public bool IsInputRedirected { get; }
+
+    public bool IsOutputRedirected { get; }
+
+    public bool IsInteractiveTerminal => !IsInputRedirected && !IsOutputRedirected;
+
+    public ITerminal Terminal { get; }
 
     public string? GetEnvironmentVariable(string name)
     {
@@ -48,24 +62,49 @@ public sealed class CliEnvironment
         return Environment.GetEnvironmentVariable(name);
     }
 
+    public string GetHomeDirectory()
+    {
+        var home =
+            GetEnvironmentVariable("HOME")
+            ?? GetEnvironmentVariable("USERPROFILE")
+            ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        return string.IsNullOrWhiteSpace(home)
+            ? CurrentDirectory
+            : Path.GetFullPath(home);
+    }
+
+    public ConsoleKeyInfo ReadKey(bool intercept = true) =>
+        _readKey is not null
+            ? _readKey(intercept)
+            : Console.ReadKey(intercept);
+
     public static CliEnvironment CreateProcessEnvironment() =>
         new(
             Console.In,
             Console.Out,
             Console.Error,
             Directory.GetCurrentDirectory(),
-            Console.IsInputRedirected);
+            Console.IsInputRedirected,
+            Console.IsOutputRedirected,
+            terminal: new ProcessTerminal(Console.Out),
+            readKey: static intercept => Console.ReadKey(intercept));
 }
 
 public sealed class CliApplication
 {
     private readonly CliEnvironment _environment;
-    private readonly CliProviderCatalog _providerCatalog;
+    private readonly CodingAgentProviderCatalog _providerCatalog;
+    private readonly Func<string, string, SettingsManager> _createSettingsManager;
 
-    public CliApplication(CliEnvironment? environment = null, CliProviderCatalog? providerCatalog = null)
+    public CliApplication(
+        CliEnvironment? environment = null,
+        CodingAgentProviderCatalog? providerCatalog = null,
+        Func<string, string, SettingsManager>? createSettingsManager = null)
     {
         _environment = environment ?? CliEnvironment.CreateProcessEnvironment();
-        _providerCatalog = providerCatalog ?? CliProviderCatalog.CreateDefault();
+        _providerCatalog = providerCatalog ?? CodingAgentProviderCatalog.CreateDefault();
+        _createSettingsManager = createSettingsManager ?? SettingsManager.Create;
     }
 
     public async Task<int> RunAsync(IReadOnlyList<string> args, CancellationToken cancellationToken = default)
@@ -101,77 +140,280 @@ public sealed class CliApplication
         }
 
         var workingDirectory = Path.GetFullPath(parsed.WorkingDirectory ?? _environment.CurrentDirectory);
-        var providerName = parsed.Provider ?? ProviderId.OpenAi.Value;
-        if (!_providerCatalog.TryGet(providerName, out var providerFactory) || providerFactory is null)
-        {
-            await _environment.Error.WriteLineAsync($"Unknown provider '{providerName}'.").ConfigureAwait(false);
-            return 1;
-        }
-
-        var resolvedProviderFactory = providerFactory;
-
-        var modelId = parsed.Model ?? resolvedProviderFactory.Configuration.DefaultModelId;
-        if (string.IsNullOrWhiteSpace(modelId))
-        {
-            await _environment.Error.WriteLineAsync(
-                $"No model configured for provider '{resolvedProviderFactory.Configuration.ProviderId.Value}'. Use --model.")
-                .ConfigureAwait(false);
-            return 1;
-        }
-
-        var apiKey = ResolveApiKey(parsed, resolvedProviderFactory);
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            var envVar = resolvedProviderFactory.Configuration.ApiKeyEnvironmentVariable ?? "provider-specific environment variable";
-            await _environment.Error.WriteLineAsync(
-                    $"Missing API key for provider '{resolvedProviderFactory.Configuration.ProviderId.Value}'. Use --api-key or set {envVar}.")
-                .ConfigureAwait(false);
-            return 1;
-        }
-
-        var initialPrompt = await BuildInitialPromptAsync(parsed, workingDirectory).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(initialPrompt))
-        {
-            await _environment.Error.WriteLineAsync("No input provided. Pass a message argument, @file, or pipe stdin.").ConfigureAwait(false);
-            return 1;
-        }
-
-        var contextFiles = parsed.NoContextFiles
-            ? Array.Empty<CodingAgentContextFile>()
-            : CliContextLoader.Load(workingDirectory);
-
-        var appendSystemPrompt = BuildAppendSystemPrompt(parsed.AppendSystemPromptInputs, workingDirectory);
-        var activeToolNames = ResolveActiveToolNames(parsed);
-        var model = resolvedProviderFactory.ResolveModel(modelId);
+        var agentDirectory = Path.Combine(_environment.GetHomeDirectory(), ".pi-sharp");
+        var bootstrap = new CodingAgentRuntimeBootstrap(
+            _providerCatalog,
+            _createSettingsManager(workingDirectory, agentDirectory));
 
         try
         {
-            var reporter = new StreamingConsoleReporter(_environment.Output, _environment.Error, parsed.Verbose);
+            var initialPrompt = await BuildInitialPromptAsync(parsed, workingDirectory).ConfigureAwait(false);
+            var persistedSource = await LoadSourceSessionAsync(parsed, bootstrap, workingDirectory, cancellationToken).ConfigureAwait(false);
+
+            var reusePersistedSystemPrompt =
+                string.IsNullOrWhiteSpace(parsed.SystemPrompt) &&
+                parsed.AppendSystemPromptInputs.Count == 0 &&
+                !string.IsNullOrWhiteSpace(persistedSource?.Context?.SystemPrompt);
+
+            var runConfiguration = bootstrap.Resolve(
+                new CodingAgentBootstrapRequest
+                {
+                    WorkingDirectory = workingDirectory,
+                    Provider = parsed.Provider,
+                    Model = parsed.Model,
+                    ApiKey = parsed.ApiKey,
+                    ThinkingLevel = parsed.ThinkingLevel,
+                    SessionDirectory = parsed.SessionDirectory,
+                    ExistingSession = persistedSource?.Context,
+                    LoadContextFiles = !parsed.NoContextFiles && !reusePersistedSystemPrompt,
+                },
+                _environment.GetEnvironmentVariable);
+
+            var interactive = ShouldRunInteractive(parsed, initialPrompt);
+            if (!interactive && string.IsNullOrWhiteSpace(initialPrompt))
+            {
+                await _environment.Error.WriteLineAsync("No input provided. Pass a message argument, @file, or pipe stdin.").ConfigureAwait(false);
+                return 1;
+            }
+
+            var appendSystemPrompt = BuildAppendSystemPrompt(parsed.AppendSystemPromptInputs, workingDirectory);
+            var activeToolNames = ResolveActiveToolNames(parsed, persistedSource?.Context?.ToolNames);
+
             using var session = await CodingAgentSession.CreateAsync(
-                    resolvedProviderFactory.Create(modelId, apiKey),
+                    runConfiguration.ProviderFactory.Create(runConfiguration.Model.Id, runConfiguration.ApiKey),
                     new CodingAgentSessionOptions
                     {
-                        Model = model,
+                        Model = runConfiguration.Model,
                         WorkingDirectory = workingDirectory,
-                        ThinkingLevel = parsed.ThinkingLevel,
+                        ThinkingLevel = runConfiguration.ThinkingLevel,
                         ActiveToolNames = activeToolNames,
-                        ContextFiles = contextFiles,
+                        ContextFiles = runConfiguration.ContextFiles,
+                        Messages = persistedSource?.Context?.Messages,
                         CustomSystemPrompt = parsed.SystemPrompt,
                         AppendSystemPrompt = appendSystemPrompt,
+                        OverrideSystemPrompt = reusePersistedSystemPrompt ? persistedSource?.Context?.SystemPrompt : null,
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            session.Subscribe(reporter.OnAgentEventAsync);
-            await session.PromptAsync(initialPrompt, cancellationToken: cancellationToken).ConfigureAwait(false);
-            await reporter.FlushAsync().ConfigureAwait(false);
-            return 0;
+            var persistenceManager = PreparePersistenceManager(
+                parsed,
+                workingDirectory,
+                runConfiguration.SessionDirectory,
+                session,
+                runConfiguration,
+                persistedSource);
+
+            if (interactive)
+            {
+                return await RunInteractiveAsync(
+                        session,
+                        persistenceManager,
+                        runConfiguration.ProviderFactory.Configuration.ProviderId.Value,
+                        runConfiguration.Model.Id,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return await RunPrintModeAsync(session, persistenceManager, initialPrompt!, parsed.Verbose, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (Exception exception)
         {
             await _environment.Error.WriteLineAsync(exception.Message).ConfigureAwait(false);
             return 1;
         }
+    }
+
+    private async Task<int> RunPrintModeAsync(
+        CodingAgentSession session,
+        SessionManager? persistenceManager,
+        string prompt,
+        bool verbose,
+        CancellationToken cancellationToken)
+    {
+        var persistedMessageCount = session.State.Messages.Count;
+        var reporter = new StreamingConsoleReporter(_environment.Output, _environment.Error, verbose);
+        session.Subscribe(reporter.OnAgentEventAsync);
+
+        await session.PromptAsync(prompt, cancellationToken: cancellationToken).ConfigureAwait(false);
+        PersistNewMessages(persistenceManager, session, ref persistedMessageCount);
+        await reporter.FlushAsync().ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<int> RunInteractiveAsync(
+        CodingAgentSession session,
+        SessionManager? persistenceManager,
+        string providerName,
+        string modelId,
+        CancellationToken cancellationToken)
+    {
+        var persistedMessageCount = session.State.Messages.Count;
+        var app = new TuiApplication(_environment.Terminal);
+        var view = new CliInteractiveView();
+        var controller = new CliInteractiveController(
+            session,
+            view,
+            providerName,
+            modelId,
+            persistenceManager?.Header?.Id,
+            persistenceManager is not null);
+
+        session.Subscribe(
+            async (@event, ct) =>
+            {
+                await controller.OnAgentEventAsync(@event, ct).ConfigureAwait(false);
+                await app.RenderAsync(cancellationToken: ct).ConfigureAwait(false);
+            });
+
+        app.AddChild(view);
+        app.SetFocus(view);
+        await app.RenderAsync(forceFullRedraw: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        while (!controller.ShouldExit)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var keyInfo = _environment.ReadKey(intercept: true);
+            if (ConsoleKeyMapper.IsExitKey(keyInfo))
+            {
+                break;
+            }
+
+            var rawInput = ConsoleKeyMapper.ToRawInput(keyInfo);
+            if (string.IsNullOrEmpty(rawInput))
+            {
+                continue;
+            }
+
+            string? submittedPrompt = null;
+            void HandleSubmitted(string prompt) => submittedPrompt = prompt;
+
+            view.Submitted += HandleSubmitted;
+            try
+            {
+                await app.HandleInputAsync(rawInput, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                view.Submitted -= HandleSubmitted;
+            }
+
+            if (submittedPrompt is null)
+            {
+                continue;
+            }
+
+            await controller.SubmitAsync(submittedPrompt, cancellationToken).ConfigureAwait(false);
+            PersistNewMessages(persistenceManager, session, ref persistedMessageCount);
+            await app.RenderAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        await _environment.Terminal.WriteAsync($"{Ansi.ShowCursor}{Environment.NewLine}", cancellationToken).ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<PersistedSessionSource?> LoadSourceSessionAsync(
+        CliArguments parsed,
+        CodingAgentRuntimeBootstrap bootstrap,
+        string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        if (parsed.NoSession)
+        {
+            return null;
+        }
+
+        var selector = parsed.ResumeSession ?? parsed.ForkSession;
+        if (string.IsNullOrWhiteSpace(selector))
+        {
+            return null;
+        }
+
+        var manager = new SessionManager(
+            bootstrap.ResolveSessionDirectory(parsed.SessionDirectory, workingDirectory),
+            workingDirectory);
+        var sessionFile = manager.ResolveSessionFile(selector);
+        await manager.LoadSessionAsync(sessionFile, cancellationToken).ConfigureAwait(false);
+        return new PersistedSessionSource(manager, manager.BuildContext());
+    }
+
+    private SessionManager? PreparePersistenceManager(
+        CliArguments parsed,
+        string workingDirectory,
+        string sessionDirectory,
+        CodingAgentSession session,
+        CodingAgentRunConfiguration runConfiguration,
+        PersistedSessionSource? source)
+    {
+        if (parsed.NoSession)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(parsed.ForkSession) && source is not null)
+        {
+            var forkedManager = new SessionManager(sessionDirectory, workingDirectory);
+            forkedManager.NewSession(
+                parentSession: source.Manager.Header?.Id,
+                providerId: runConfiguration.ProviderFactory.Configuration.ProviderId.Value,
+                modelId: runConfiguration.Model.Id,
+                thinkingLevel: runConfiguration.ThinkingLevel.ToString().ToLowerInvariant(),
+                systemPrompt: session.SystemPrompt,
+                toolNames: session.ActiveToolNames);
+
+            foreach (var entry in source.Manager.GetBranch())
+            {
+                forkedManager.AppendEntry(CloneEntry(entry));
+            }
+
+            return forkedManager;
+        }
+
+        if (!string.IsNullOrWhiteSpace(parsed.ResumeSession) && source is not null)
+        {
+            source.Manager.UpdateHeader(header => header with
+            {
+                Cwd = workingDirectory,
+                ProviderId = runConfiguration.ProviderFactory.Configuration.ProviderId.Value,
+                ModelId = runConfiguration.Model.Id,
+                ThinkingLevel = runConfiguration.ThinkingLevel.ToString().ToLowerInvariant(),
+                SystemPrompt = session.SystemPrompt,
+                ToolNames = session.ActiveToolNames.ToArray(),
+            });
+
+            return source.Manager;
+        }
+
+        var manager = new SessionManager(sessionDirectory, workingDirectory);
+        manager.NewSession(
+            providerId: runConfiguration.ProviderFactory.Configuration.ProviderId.Value,
+            modelId: runConfiguration.Model.Id,
+            thinkingLevel: runConfiguration.ThinkingLevel.ToString().ToLowerInvariant(),
+            systemPrompt: session.SystemPrompt,
+            toolNames: session.ActiveToolNames);
+
+        return manager;
+    }
+
+    private static void PersistNewMessages(
+        SessionManager? persistenceManager,
+        CodingAgentSession session,
+        ref int persistedMessageCount)
+    {
+        if (persistenceManager is null)
+        {
+            return;
+        }
+
+        var messages = session.State.Messages;
+        for (var index = persistedMessageCount; index < messages.Count; index++)
+        {
+            persistenceManager.AppendEntry(SessionMessageEntry.FromChatMessage(messages[index]));
+        }
+
+        persistedMessageCount = messages.Count;
     }
 
     private async Task ListModelsAsync(string? filter)
@@ -228,7 +470,7 @@ public sealed class CliApplication
 
         if (parsed.FileArguments.Count > 0)
         {
-            parts.Add(CliContextLoader.LoadFileArgumentText(parsed.FileArguments, workingDirectory));
+            parts.Add(CodingAgentContextLoader.LoadFileArgumentText(parsed.FileArguments, workingDirectory));
         }
 
         if (parsed.Messages.Count > 0)
@@ -242,7 +484,7 @@ public sealed class CliApplication
     private string? BuildAppendSystemPrompt(IEnumerable<string> promptInputs, string workingDirectory)
     {
         var resolvedInputs = promptInputs
-            .Select(promptInput => CliContextLoader.ResolvePromptInput(promptInput, workingDirectory))
+            .Select(promptInput => CodingAgentContextLoader.ResolvePromptInput(promptInput, workingDirectory))
             .Where(static value => !string.IsNullOrWhiteSpace(value))
             .ToArray();
 
@@ -251,31 +493,29 @@ public sealed class CliApplication
             : string.Join("\n\n", resolvedInputs);
     }
 
-    private static IReadOnlyList<string> ResolveActiveToolNames(CliArguments parsed)
+    private bool ShouldRunInteractive(CliArguments parsed, string? initialPrompt) =>
+        _environment.IsInteractiveTerminal &&
+        !parsed.Print &&
+        string.IsNullOrWhiteSpace(initialPrompt);
+
+    private static IReadOnlyList<string> ResolveActiveToolNames(CliArguments parsed, IReadOnlyList<string>? sessionToolNames)
     {
         if (parsed.NoTools)
         {
             return Array.Empty<string>();
         }
 
-        return parsed.Tools is { Count: > 0 }
-            ? parsed.Tools
-            : BuiltInToolNames.Default;
-    }
-
-    private string? ResolveApiKey(CliArguments parsed, CliProviderFactory providerFactory)
-    {
-        if (!string.IsNullOrWhiteSpace(parsed.ApiKey))
+        if (parsed.Tools is { Count: > 0 })
         {
-            return parsed.ApiKey;
+            return parsed.Tools;
         }
 
-        if (string.IsNullOrWhiteSpace(providerFactory.Configuration.ApiKeyEnvironmentVariable))
+        if (sessionToolNames is { Count: > 0 })
         {
-            return null;
+            return sessionToolNames;
         }
 
-        return _environment.GetEnvironmentVariable(providerFactory.Configuration.ApiKeyEnvironmentVariable);
+        return BuiltInToolNames.Default;
     }
 
     private void ReportDiagnostics(IEnumerable<CliDiagnostic> diagnostics)
@@ -288,6 +528,17 @@ public sealed class CliApplication
                     : $"Error: {diagnostic.Message}");
         }
     }
+
+    private static SessionEntry CloneEntry(SessionEntry entry) =>
+        entry switch
+        {
+            SessionMessageEntry message => message with { },
+            ThinkingLevelChangeEntry thinkingLevel => thinkingLevel with { },
+            ModelChangeEntry modelChange => modelChange with { },
+            CompactionEntry compaction => compaction with { },
+            LabelEntry label => label with { },
+            _ => throw new InvalidOperationException($"Unsupported session entry type '{entry.GetType().Name}'."),
+        };
 
     private static string GetVersionText() =>
         typeof(CliApplication).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -316,6 +567,8 @@ public sealed class CliApplication
 
         return value.ToString();
     }
+
+    private sealed record PersistedSessionSource(SessionManager Manager, SessionContext Context);
 
     private sealed class StreamingConsoleReporter(TextWriter output, TextWriter error, bool verbose)
     {

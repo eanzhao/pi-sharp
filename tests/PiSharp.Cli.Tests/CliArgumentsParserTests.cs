@@ -17,6 +17,10 @@ public sealed class CliArgumentsParserTests
                 "read,grep,find",
                 "--thinking",
                 "high",
+                "--session-dir",
+                ".pi-sharp/sessions",
+                "--resume",
+                "latest",
                 "@README.md",
                 "fix",
                 "tests",
@@ -32,8 +36,27 @@ public sealed class CliArgumentsParserTests
             ],
             arguments.Tools);
         Assert.Equal(ThinkingLevel.High, arguments.ThinkingLevel);
+        Assert.Equal(".pi-sharp/sessions", arguments.SessionDirectory);
+        Assert.Equal("latest", arguments.ResumeSession);
         Assert.Equal(["README.md"], arguments.FileArguments);
         Assert.Equal(["fix", "tests"], arguments.Messages);
         Assert.Empty(arguments.Diagnostics);
+    }
+
+    [Fact]
+    public void Parse_RejectsConflictingSessionFlags()
+    {
+        var arguments = CliArgumentsParser.Parse(
+            [
+                "--resume",
+                "session-a",
+                "--fork",
+                "session-b",
+            ]);
+
+        Assert.Contains(
+            arguments.Diagnostics,
+            diagnostic => diagnostic.Severity == CliDiagnosticSeverity.Error &&
+                diagnostic.Message.Contains("--resume cannot be combined with --fork.", StringComparison.Ordinal));
     }
 }

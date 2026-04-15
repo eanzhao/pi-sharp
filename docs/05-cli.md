@@ -2,15 +2,20 @@
 
 ## 目标
 
-Phase 05 实现 `PiSharp.Cli`，把前四个阶段的能力接成一个可运行的命令行入口：
+Phase 05 的目标是把前四个阶段的能力接成一个真实可用的命令行入口。最初只落了 print mode；随后补齐了
+phase 05 follow-up 中缺失的三块能力：
 
-1. 解析 CLI 参数并解析初始 prompt
-2. 初始化 provider / model 并创建 `IChatClient`
-3. 收集 `AGENTS.md` / `CLAUDE.md` 作为 project context
-4. 创建 `CodingAgentSession`，以 print mode 跑完整请求
+1. 交互式 TTY 模式，基于 `PiSharp.Tui`
+2. 持久化 session、resume、fork
+3. 多 provider 支持，以及可复用的 runtime bootstrap
 
-这一阶段先交付一个**非交互、可测试、可扩展**的 CLI。session 持久化、interactive TUI、extension discovery
-和更完整的 provider 矩阵继续留在后续阶段。
+当前 `PiSharp.Cli` 已经支持：
+
+- print mode 和 interactive mode 共用同一条 `CodingAgentSession` 运行路径
+- OpenAI / Anthropic / Google 三个 provider
+- `AGENTS.md` / `CLAUDE.md` 祖先目录扫描
+- persisted session 默认落盘到 `.pi-sharp/sessions/`
+- `--resume` / `--fork` / `--no-session` 生命周期控制
 
 ## 参考实现
 
@@ -18,117 +23,157 @@ Phase 05 实现 `PiSharp.Cli`，把前四个阶段的能力接成一个可运行
 - `pi-mono/packages/coding-agent/src/cli/initial-message.ts`
 - `pi-mono/packages/coding-agent/src/cli/list-models.ts`
 - `pi-mono/packages/coding-agent/src/core/resource-loader.ts`
+- `pi-mono/packages/coding-agent/src/core/session-manager.ts`
 - `pi-mono/packages/coding-agent/src/main.ts`
 
-## 本阶段范围
+## 当前范围
 
 - `CliArgumentsParser`
-- `CliContextLoader`
-- `CliProviderCatalog` / `CliProviderFactory`
 - `CliApplication`
 - `Program.cs`
+- `CliInteractive*`
+- `CodingAgentContextLoader`
+- `CodingAgentRuntimeBootstrap`
+- `SessionManager`
 - `PiSharp.Cli.Tests`
 
 ## 设计
 
-### 1. 参数解析保持小而稳
+### 1. CLI 只保留参数与前端壳
 
-当前 CLI 支持的参数只覆盖 phase 05 真正需要的主链路：
+provider/model/api-key/context/session-dir 的解析不再耦合在 `Program.cs` 或 `CliApplication` 里。
+这部分被抽到 `PiSharp.CodingAgent`：
 
-- `--provider`
-- `--model`
-- `--api-key`
-- `--cwd`
-- `--system-prompt`
-- `--append-system-prompt`
-- `--tools` / `--no-tools`
-- `--no-context-files`
-- `--thinking`
-- `--list-models`
-- `--verbose`
+- `CodingAgentContextLoader`
+- `CodingAgentProviderCatalog`
+- `CodingAgentRuntimeBootstrap`
+- `SettingsManager`
 
-这与 pi-mono 的完整参数面相比小很多，但已经足够支撑：
+这样后续新增 Web、Pods 或别的 frontend 时，可以复用同一套 provider/bootstrap 逻辑，而不是复制一份
+CLI 版本的初始化代码。
 
-- 一次性 print-mode 调用
-- 仓库上下文注入
-- provider/model 显式选择
-- 基础模型列表查看
+### 2. Provider catalog 扩到三家
 
-### 2. 上下文文件加载对齐 pi-mono 的“祖先目录扫描”
+`CodingAgentProviderCatalog` 当前内置：
 
-`CliContextLoader` 参考 `resource-loader.ts`：
+- `openai`
+- `anthropic`
+- `google`
 
-- 从工作目录一路向上扫描祖先目录
-- 每个目录按 `AGENTS.md` → `CLAUDE.md` 的优先级挑一个 context 文件
-- 按从外到内的顺序注入 system prompt
+每个 provider 都提供：
 
-这样仓库根规则、子目录局部规则都能自然叠加到 `CodingAgentSession`。
+- `ProviderConfiguration`
+- 已知 `ModelMetadata`
+- env-based API key 解析
+- `modelId + apiKey -> IChatClient` 的工厂
 
-### 3. Provider 初始化放在 CLI
+CLI 只负责把参数传进去，不再关心具体 SDK 初始化。
 
-phase 01 已明确：`PiSharp.Ai` 只负责 registry，不负责真实 provider 初始化。
-因此 phase 05 新增 `CliProviderFactory`：
+### 3. 上下文文件加载保持 pi-mono 的祖先目录扫描
 
-- 暴露 `ProviderConfiguration`
-- 提供已知 `ModelMetadata`
-- 负责把 `apiKey + modelId` 转成 `IChatClient`
+`CodingAgentContextLoader` 会从工作目录一路向上扫描祖先目录，并在每层目录按：
 
-默认实现先接 OpenAI，并保留 catalog 结构，后面继续加 Anthropic / Google 时不需要改 CLI 主流程。
+- `AGENTS.md`
+- `CLAUDE.md`
 
-### 4. 运行模式先收敛为 print mode
+的优先级选一个 context 文件，从外到内注入 system prompt。
 
-`CliApplication` 当前只做一件事：
+这层逻辑被挪到 shared layer 后，CLI 和后续 frontend 都可以得到一致的 repo-context 行为。
 
-1. 收集 stdin、`@file` 和 positional message
-2. 构造 `CodingAgentSessionOptions`
-3. 订阅 `AgentEvent`
-4. 把 assistant 文本流直接写到 stdout
-5. 把 tool 执行诊断写到 stderr（`--verbose` 时）
+### 4. 运行模式分成 print / interactive，但共享同一个 session
 
-这意味着 phase 05 已经把：
+两种模式都走同一条 `CodingAgentSession` 路径：
 
-- `PiSharp.Ai` 的流式内容
-- `PiSharp.Agent` 的事件系统
-- `PiSharp.CodingAgent` 的工具和 prompt 装配
+- print mode：一次性提交 prompt，把 assistant 文本流到 stdout
+- interactive mode：当 stdin/stdout 都是 TTY 且没有初始 prompt 时启动 `PiSharp.Tui`
 
-都串进了一个真实 CLI 闭环。
+interactive mode 的实现刻意保持最小：
 
-### 5. 为什么暂时不接交互 TUI
+- 一个 transcript 区域
+- 一个输入框
+- live assistant streaming
+- tool started / updated / completed 状态
+- 同一个 session 内反复提交 prompt
 
-虽然 `PiSharp.Tui` 已经具备基础组件和差分渲染，但当前终端输入层仍停留在较基础的阶段。
-如果 phase 05 直接把 interactive mode、raw input、session picker 一起加入，范围会迅速膨胀到接近
-pi-mono 主程序。
+这满足 phase 05 follow-up 对交互能力的闭环要求，但没有试图一次性追平 pi-mono 的完整 TUI。
 
-因此这一阶段只完成：
+### 5. Session 默认持久化，`--no-session` 走 ephemeral
 
-- 非交互命令入口
-- 面向后续 interactive mode 的 provider/context/session 组装层
+CLI 默认把 session 落到：
 
-后面一旦终端输入能力补齐，就可以在 `CliApplication` 之上追加真正的 TUI 模式，而不需要推翻现有接线。
+`<working-directory>/.pi-sharp/sessions/`
+
+也可以用：
+
+- `--session-dir <dir>`
+- `settings.json` 里的 `sessionDir`
+
+覆盖。若显式传 `--no-session`，则继续保留完全内存态运行路径。
+
+### 6. Session lifecycle
+
+当前支持三种路径：
+
+- 新 session：默认创建新的 persisted session
+- `--resume <id-or-path>`：在现有 session 上继续追加消息
+- `--fork <id-or-path>`：从既有 session branch 复制上下文，并写入一个新的 session 文件
+
+`latest` 也可以作为 `--resume` / `--fork` 的 selector 使用。
+
+### 7. 持久化格式
+
+session 使用 JSONL：
+
+1. 第一行是 `session` header
+2. 后续每行是一个 `SessionEntry`
+
+header 记录：
+
+- `id`
+- `cwd`
+- `parentSession`
+- `providerId`
+- `modelId`
+- `thinkingLevel`
+- `systemPrompt`
+- `toolNames`
+
+entry 当前支持：
+
+- `message`
+- `thinkingLevelChange`
+- `modelChange`
+- `compaction`
+- `label`
+
+`message` entry 会保存可恢复的 `ChatMessage` 形态，而不只是纯文本，因此 tool call / tool result 也能在
+resume 和 fork 后继续作为上下文恢复。
 
 ## 与 pi-mono 的对应关系
 
-| pi-mono | PiSharp.Cli |
+| pi-mono | PiSharp |
 |---|---|
 | `parseArgs()` | `CliArgumentsParser.Parse()` |
 | `buildInitialMessage()` | `CliApplication.BuildInitialPromptAsync()` |
-| `loadProjectContextFiles()` | `CliContextLoader.Load()` |
-| `listModels()` | `CliApplication.ListModelsAsync()` |
-| `main.ts` print path | `CliApplication.RunAsync()` |
+| `loadProjectContextFiles()` | `CodingAgentContextLoader.Load()` |
+| `resolveAppMode()` | `CliApplication.RunAsync()` |
+| `createSessionManager()` | `SessionManager` |
+| `main.ts` runtime bootstrap | `CodingAgentRuntimeBootstrap` |
 
 ## 当前取舍
 
-- 只实现 print mode，不做 interactive / rpc
-- 不做 session 持久化、resume、fork
-- provider 目录先接 OpenAI，其它 provider 后续补
-- `@file` 只按文本文件处理，不做图片
-- 模型列表先展示 CLI 侧已知模型，不做远程模型发现
+- interactive mode 只覆盖 transcript + input + live stream，不做完整 pane 系统
+- session selector 先支持 `id` / `path` / `latest`，不做更复杂的 picker
+- provider catalog 仍是静态内置，不做远程模型发现
+- `@file` 仍按文本文件处理，不做图片输入
 
 ## 验证
 
 测试覆盖：
 
-- 参数解析主路径
-- 祖先目录 context 文件加载顺序
-- CLI print mode 调用时把 context 注入到 system prompt
-- `--list-models` 输出已知模型目录
+- 参数解析和冲突 flag 校验
+- shared bootstrap 的 provider/api-key/context/session-dir 解析
+- print mode 的 context 注入和模型列表输出
+- persisted session 的 resume / fork / invalid selector
+- interactive mode 在 TTY 下的最小编排
+- `SessionManager` 的 JSONL 持久化与 tool-message round-trip

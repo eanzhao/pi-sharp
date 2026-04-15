@@ -5,6 +5,7 @@ public sealed record CodingAgentSettings
     public string? DefaultProvider { get; init; }
     public string? DefaultModel { get; init; }
     public string? DefaultThinkingLevel { get; init; }
+    public string? SessionDir { get; init; }
     public string? ShellPath { get; init; }
     public string? SteeringMode { get; init; }
     public string? FollowUpMode { get; init; }
@@ -31,6 +32,7 @@ public sealed record CodingAgentSettings
             DefaultProvider = overlay.DefaultProvider ?? DefaultProvider,
             DefaultModel = overlay.DefaultModel ?? DefaultModel,
             DefaultThinkingLevel = overlay.DefaultThinkingLevel ?? DefaultThinkingLevel,
+            SessionDir = overlay.SessionDir ?? SessionDir,
             ShellPath = overlay.ShellPath ?? ShellPath,
             SteeringMode = overlay.SteeringMode ?? SteeringMode,
             FollowUpMode = overlay.FollowUpMode ?? FollowUpMode,

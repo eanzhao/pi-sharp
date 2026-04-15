@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using Microsoft.Extensions.AI;
 
 namespace PiSharp.CodingAgent;
 
@@ -28,7 +29,13 @@ public sealed class SessionManager
     public string? LeafId { get; private set; }
     public IReadOnlyList<SessionEntry> Entries => _entries;
 
-    public string NewSession(string? parentSession = null)
+    public string NewSession(
+        string? parentSession = null,
+        string? providerId = null,
+        string? modelId = null,
+        string? thinkingLevel = null,
+        string? systemPrompt = null,
+        IReadOnlyList<string>? toolNames = null)
     {
         var sessionId = Guid.NewGuid().ToString("N")[..16];
         var timestamp = SessionEntry.Now();
@@ -39,6 +46,11 @@ public sealed class SessionManager
             Timestamp = timestamp,
             Cwd = Cwd,
             ParentSession = parentSession,
+            ProviderId = providerId,
+            ModelId = modelId,
+            ThinkingLevel = thinkingLevel,
+            SystemPrompt = systemPrompt,
+            ToolNames = toolNames?.ToArray() ?? Array.Empty<string>(),
         };
 
         _entries.Clear();
@@ -109,6 +121,19 @@ public sealed class SessionManager
         }
     }
 
+    public void UpdateHeader(Func<SessionHeader, SessionHeader> transform)
+    {
+        ArgumentNullException.ThrowIfNull(transform);
+
+        if (Header is null)
+        {
+            throw new InvalidOperationException("Session header is not loaded.");
+        }
+
+        Header = transform(Header);
+        RewriteFile();
+    }
+
     public SessionEntry? GetEntry(string id) =>
         _byId.TryGetValue(id, out var entry) ? entry : null;
 
@@ -143,13 +168,74 @@ public sealed class SessionManager
         LeafId = entryId;
     }
 
+    public string ResolveSessionFile(string selector)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(selector);
+
+        if (string.Equals(selector, "latest", StringComparison.OrdinalIgnoreCase))
+        {
+            return FindLatestSessionFile()
+                ?? throw new FileNotFoundException($"No sessions were found in {SessionDir}.");
+        }
+
+        if (File.Exists(selector))
+        {
+            return Path.GetFullPath(selector);
+        }
+
+        var rootedCandidate = Path.GetFullPath(selector);
+        if (File.Exists(rootedCandidate))
+        {
+            return rootedCandidate;
+        }
+
+        if (!Directory.Exists(SessionDir))
+        {
+            throw new FileNotFoundException($"Session directory not found: {SessionDir}");
+        }
+
+        var matches = Directory
+            .EnumerateFiles(SessionDir, "*.jsonl", SearchOption.TopDirectoryOnly)
+            .Select(file => (File: file, Header: TryReadHeader(file)))
+            .Where(static candidate => candidate.Header is not null)
+            .Where(candidate =>
+                string.Equals(candidate.Header!.Id, selector, StringComparison.OrdinalIgnoreCase) ||
+                candidate.Header.Id.StartsWith(selector, StringComparison.OrdinalIgnoreCase) ||
+                Path.GetFileNameWithoutExtension(candidate.File).Contains(selector, StringComparison.OrdinalIgnoreCase))
+            .Select(static candidate => candidate.File)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return matches.Length switch
+        {
+            0 => throw new FileNotFoundException($"Session '{selector}' was not found in {SessionDir}."),
+            1 => matches[0],
+            _ => throw new InvalidOperationException($"Session selector '{selector}' is ambiguous."),
+        };
+    }
+
+    public string? FindLatestSessionFile()
+    {
+        if (!Directory.Exists(SessionDir))
+        {
+            return null;
+        }
+
+        return Directory
+            .EnumerateFiles(SessionDir, "*.jsonl", SearchOption.TopDirectoryOnly)
+            .OrderByDescending(static file => Path.GetFileName(file), StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
+
     public SessionContext BuildContext(string? leafId = null)
     {
         var branch = GetBranch(leafId);
-        var messages = new List<SessionMessageEntry>();
-        string? thinkingLevel = null;
-        string? providerId = null;
-        string? modelId = null;
+        var messages = new List<ChatMessage>();
+        var thinkingLevel = Header?.ThinkingLevel;
+        var providerId = Header?.ProviderId;
+        var modelId = Header?.ModelId;
+        var systemPrompt = Header?.SystemPrompt;
+        var toolNames = Header?.ToolNames?.ToArray() ?? Array.Empty<string>();
 
         CompactionEntry? lastCompaction = null;
         var firstKeptIndex = 0;
@@ -166,13 +252,7 @@ public sealed class SessionManager
 
         if (lastCompaction is not null)
         {
-            messages.Add(new SessionMessageEntry
-            {
-                Id = SessionEntry.NewId(),
-                Timestamp = lastCompaction.Timestamp,
-                Role = "assistant",
-                Text = lastCompaction.Summary,
-            });
+            messages.Add(new ChatMessage(ChatRole.Assistant, lastCompaction.Summary));
         }
 
         for (var i = firstKeptIndex; i < branch.Count; i++)
@@ -180,7 +260,7 @@ public sealed class SessionManager
             switch (branch[i])
             {
                 case SessionMessageEntry msg:
-                    messages.Add(msg);
+                    messages.Add(msg.ToChatMessage());
                     break;
                 case ThinkingLevelChangeEntry tlc:
                     thinkingLevel = tlc.Level;
@@ -192,6 +272,38 @@ public sealed class SessionManager
             }
         }
 
-        return new SessionContext(messages, thinkingLevel, providerId, modelId);
+        return new SessionContext(messages, thinkingLevel, providerId, modelId, systemPrompt, toolNames);
+    }
+
+    private static SessionHeader? TryReadHeader(string sessionFile)
+    {
+        try
+        {
+            using var reader = File.OpenText(sessionFile);
+            var line = reader.ReadLine();
+            return string.IsNullOrWhiteSpace(line)
+                ? null
+                : JsonSerializer.Deserialize<SessionHeader>(line, JsonOptions);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private void RewriteFile()
+    {
+        if (SessionFile is null || Header is null)
+        {
+            return;
+        }
+
+        var lines = new List<string> { JsonSerializer.Serialize(Header, JsonOptions) };
+        lines.AddRange(_entries.Select(static entry => JsonSerializer.Serialize<SessionEntry>(entry, JsonOptions)));
+        File.WriteAllLines(SessionFile, lines);
     }
 }
