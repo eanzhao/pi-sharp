@@ -10,6 +10,58 @@ public sealed class CliApplicationTests : IDisposable
     private readonly string _rootDirectory = Path.Combine(Path.GetTempPath(), $"pisharp-cli-app-{Guid.NewGuid():N}");
 
     [Fact]
+    public async Task RunAsync_DelegatesPodsNamespaceCommands()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        IReadOnlyList<string>? forwardedArgs = null;
+
+        var application = new CliApplication(
+            new CliEnvironment(
+                new StringReader(string.Empty),
+                output,
+                error,
+                _rootDirectory,
+                isInputRedirected: false),
+            runPodsCommand: (args, _) =>
+            {
+                forwardedArgs = args.ToArray();
+                return Task.FromResult(0);
+            });
+
+        var exitCode = await application.RunAsync(["pods", "start", "Qwen/Qwen2.5-Coder-32B-Instruct", "--name", "qwen"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["start", "Qwen/Qwen2.5-Coder-32B-Instruct", "--name", "qwen"], forwardedArgs);
+    }
+
+    [Fact]
+    public async Task RunAsync_DelegatesPodsRootCommand()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        IReadOnlyList<string>? forwardedArgs = null;
+
+        var application = new CliApplication(
+            new CliEnvironment(
+                new StringReader(string.Empty),
+                output,
+                error,
+                _rootDirectory,
+                isInputRedirected: false),
+            runPodsCommand: (args, _) =>
+            {
+                forwardedArgs = args.ToArray();
+                return Task.FromResult(0);
+            });
+
+        var exitCode = await application.RunAsync(["pods"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["pods"], forwardedArgs);
+    }
+
+    [Fact]
     public async Task RunAsync_PrintsAssistantTextAndInjectsContextFilesIntoPrompt()
     {
         var repoDirectory = Path.Combine(_rootDirectory, "repo");

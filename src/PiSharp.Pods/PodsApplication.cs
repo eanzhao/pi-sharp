@@ -1,0 +1,604 @@
+using System.Reflection;
+using Microsoft.Extensions.AI;
+using PiSharp.Agent;
+using PiSharp.Ai;
+
+namespace PiSharp.Pods;
+
+public sealed class PodsConsoleEnvironment
+{
+    private readonly IReadOnlyDictionary<string, string?>? _environmentVariables;
+
+    public PodsConsoleEnvironment(
+        TextReader input,
+        TextWriter output,
+        TextWriter error,
+        string currentDirectory,
+        bool isInputRedirected,
+        IReadOnlyDictionary<string, string?>? environmentVariables = null)
+    {
+        Input = input ?? throw new ArgumentNullException(nameof(input));
+        Output = output ?? throw new ArgumentNullException(nameof(output));
+        Error = error ?? throw new ArgumentNullException(nameof(error));
+        CurrentDirectory = Path.GetFullPath(currentDirectory ?? throw new ArgumentNullException(nameof(currentDirectory)));
+        IsInputRedirected = isInputRedirected;
+        _environmentVariables = environmentVariables;
+    }
+
+    public TextReader Input { get; }
+
+    public TextWriter Output { get; }
+
+    public TextWriter Error { get; }
+
+    public string CurrentDirectory { get; }
+
+    public bool IsInputRedirected { get; }
+
+    public string? GetEnvironmentVariable(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        if (_environmentVariables is not null && _environmentVariables.TryGetValue(name, out var value))
+        {
+            return value;
+        }
+
+        return Environment.GetEnvironmentVariable(name);
+    }
+
+    public static PodsConsoleEnvironment CreateProcessEnvironment() =>
+        new(
+            Console.In,
+            Console.Out,
+            Console.Error,
+            Directory.GetCurrentDirectory(),
+            Console.IsInputRedirected);
+}
+
+public sealed class PodsApplication
+{
+    private static readonly IReadOnlyDictionary<string, ThinkingLevel> ThinkingLevels =
+        new Dictionary<string, ThinkingLevel>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["off"] = ThinkingLevel.Off,
+            ["minimal"] = ThinkingLevel.Minimal,
+            ["low"] = ThinkingLevel.Low,
+            ["medium"] = ThinkingLevel.Medium,
+            ["high"] = ThinkingLevel.High,
+            ["xhigh"] = ThinkingLevel.ExtraHigh,
+        };
+
+    private readonly PodsConsoleEnvironment _environment;
+    private readonly PodService _podService;
+    private readonly PodAgentFactory _podAgentFactory;
+    private readonly string _appName;
+    private readonly bool _namespaced;
+
+    public PodsApplication(
+        PodsConsoleEnvironment? environment = null,
+        PodService? podService = null,
+        PodAgentFactory? podAgentFactory = null,
+        string appName = "pisharp-pods",
+        bool namespaced = false)
+    {
+        _environment = environment ?? PodsConsoleEnvironment.CreateProcessEnvironment();
+        _podService = podService ?? new PodService(getEnvironmentVariable: _environment.GetEnvironmentVariable);
+        _podAgentFactory = podAgentFactory ?? new PodAgentFactory();
+        _appName = string.IsNullOrWhiteSpace(appName) ? "pisharp-pods" : appName.Trim();
+        _namespaced = namespaced;
+    }
+
+    public async Task<int> RunAsync(IReadOnlyList<string> args, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+
+        if (args.Count == 0 || IsHelp(args[0]))
+        {
+            await _environment.Output.WriteLineAsync(GetHelpText(_appName, _namespaced)).ConfigureAwait(false);
+            return 0;
+        }
+
+        if (IsVersion(args[0]))
+        {
+            await _environment.Output.WriteLineAsync(GetVersionText()).ConfigureAwait(false);
+            return 0;
+        }
+
+        try
+        {
+            return args[0] switch
+            {
+                "pods" => await RunPodsAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                "setup" => await RunPodsSetupAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                "active" => await RunPodsActiveAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
+                "remove" => await RunPodsRemoveAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
+                "start" => await RunStartAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                "stop" => await RunStopAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                "list" => await RunListAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                "logs" => await RunLogsAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                "agent" => await RunAgentAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                _ => await UnknownCommandAsync(args[0]).ConfigureAwait(false),
+            };
+        }
+        catch (Exception exception)
+        {
+            await _environment.Error.WriteLineAsync(exception.Message).ConfigureAwait(false);
+            return 1;
+        }
+    }
+
+    public static string GetHelpText(string appName = "pisharp-pods", bool namespaced = false)
+    {
+        var rootCommand = namespaced ? $"{appName} pods" : appName;
+        var podCommandRoot = namespaced ? rootCommand : $"{appName} pods";
+
+        return
+        $"""
+{rootCommand} - PiSharp GPU pod CLI
+
+Usage:
+  {podCommandRoot}
+  {podCommandRoot} setup <name> "<ssh>" [--mount <command>] [--models-path <path>] [--vllm release|nightly|gpt-oss]
+  {podCommandRoot} active <name>
+  {podCommandRoot} remove <name>
+  {rootCommand} start <model> --name <name> [--memory <percent>] [--context <size>] [--gpus <count>] [--pod <name>] [--vllm <args...>]
+  {rootCommand} stop [<name>] [--pod <name>]
+  {rootCommand} list [--pod <name>]
+  {rootCommand} logs <name> [--pod <name>]
+  {rootCommand} agent <name> [message...] [--pod <name>] [--api-key <key>] [--cwd <dir>] [--thinking <level>]
+
+Examples:
+  {podCommandRoot} setup dc1 "ssh root@1.2.3.4" --models-path /workspace
+  {rootCommand} start Qwen/Qwen2.5-Coder-32B-Instruct --name qwen
+  {rootCommand} list
+  {rootCommand} agent qwen "Summarize the repository"
+""";
+    }
+
+    private async Task<int> RunPodsAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        if (args.Count == 0)
+        {
+            await _environment.Output.WriteLineAsync(_podService.FormatPods()).ConfigureAwait(false);
+            return 0;
+        }
+
+        return args[0] switch
+        {
+            "setup" => await RunPodsSetupAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+            "active" => await RunPodsActiveAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
+            "remove" => await RunPodsRemoveAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
+            _ => await UnknownSubcommandAsync("pods", args[0]).ConfigureAwait(false),
+        };
+    }
+
+    private async Task<int> RunPodsSetupAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        if (args.Count < 2)
+        {
+            throw new InvalidOperationException("Usage: pods setup <name> \"<ssh>\" [--mount <command>] [--models-path <path>] [--vllm release|nightly|gpt-oss]");
+        }
+
+        var name = args[0];
+        var sshCommand = args[1];
+        string? mountCommand = null;
+        string? modelsPath = null;
+        var vllmVersion = PodsDefaults.VllmRelease;
+
+        for (var index = 2; index < args.Count; index++)
+        {
+            switch (args[index])
+            {
+                case "--mount":
+                    mountCommand = ReadRequiredValue(args, ref index, "--mount");
+                    break;
+                case "--models-path":
+                    modelsPath = ReadRequiredValue(args, ref index, "--models-path");
+                    break;
+                case "--vllm":
+                    vllmVersion = ReadRequiredValue(args, ref index, "--vllm");
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown option '{args[index]}'.");
+            }
+        }
+
+        var result = await _podService.SetupPodAsync(
+                name,
+                sshCommand,
+                new PodSetupRequest
+                {
+                    MountCommand = mountCommand,
+                    ModelsPath = modelsPath,
+                    VllmVersion = vllmVersion,
+                },
+                WritePodOutputAsync,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await _environment.Output.WriteLineAsync($"Pod '{result.PodName}' setup complete and set as active.").ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<int> RunPodsActiveAsync(IReadOnlyList<string> args)
+    {
+        if (args.Count != 1)
+        {
+            throw new InvalidOperationException("Usage: pods active <name>");
+        }
+
+        _podService.SetActivePod(args[0]);
+        await _environment.Output.WriteLineAsync($"Active pod set to '{args[0]}'").ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<int> RunPodsRemoveAsync(IReadOnlyList<string> args)
+    {
+        if (args.Count != 1)
+        {
+            throw new InvalidOperationException("Usage: pods remove <name>");
+        }
+
+        _podService.RemovePod(args[0]);
+        await _environment.Output.WriteLineAsync($"Removed pod '{args[0]}' from local configuration.").ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<int> RunStartAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        if (args.Count == 0)
+        {
+            await _environment.Output.WriteLineAsync(_podService.FormatKnownModels()).ConfigureAwait(false);
+            return 0;
+        }
+
+        var modelId = args[0];
+        string? name = null;
+        string? podName = null;
+        string? memory = null;
+        string? contextWindow = null;
+        int? gpuCount = null;
+        var customVllmArguments = Array.Empty<string>();
+
+        for (var index = 1; index < args.Count; index++)
+        {
+            switch (args[index])
+            {
+                case "--name":
+                    name = ReadRequiredValue(args, ref index, "--name");
+                    break;
+                case "--pod":
+                    podName = ReadRequiredValue(args, ref index, "--pod");
+                    break;
+                case "--memory":
+                    memory = ReadRequiredValue(args, ref index, "--memory");
+                    break;
+                case "--context":
+                    contextWindow = ReadRequiredValue(args, ref index, "--context");
+                    break;
+                case "--gpus":
+                    gpuCount = int.Parse(ReadRequiredValue(args, ref index, "--gpus"));
+                    break;
+                case "--vllm":
+                    customVllmArguments = args.Skip(index + 1).ToArray();
+                    index = args.Count;
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown option '{args[index]}'.");
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new InvalidOperationException("Usage: start <model> --name <name> [options]");
+        }
+
+        var result = await _podService.StartModelAsync(
+                new PodStartRequest
+                {
+                    ModelId = modelId,
+                    Name = name,
+                    PodName = podName,
+                    Memory = memory,
+                    ContextWindow = contextWindow,
+                    GpuCount = gpuCount,
+                    CustomVllmArguments = customVllmArguments,
+                },
+                WritePodOutputAsync,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await _environment.Output.WriteLineAsync().ConfigureAwait(false);
+        await _environment.Output.WriteLineAsync($"Base URL: {result.BaseUri}").ConfigureAwait(false);
+        await _environment.Output.WriteLineAsync($"Model: {result.Plan.ModelId}").ConfigureAwait(false);
+        await _environment.Output.WriteLineAsync($"PID: {result.ProcessId}").ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<int> RunStopAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        string? name = null;
+        string? podName = null;
+
+        for (var index = 0; index < args.Count; index++)
+        {
+            if (args[index] == "--pod")
+            {
+                podName = ReadRequiredValue(args, ref index, "--pod");
+                continue;
+            }
+
+            if (name is null)
+            {
+                name = args[index];
+                continue;
+            }
+
+            throw new InvalidOperationException($"Unexpected argument '{args[index]}'.");
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            await _podService.StopAllModelsAsync(podName, cancellationToken).ConfigureAwait(false);
+            await _environment.Output.WriteLineAsync("Stopped all models on the selected pod.").ConfigureAwait(false);
+        }
+        else
+        {
+            await _podService.StopModelAsync(name, podName, cancellationToken).ConfigureAwait(false);
+            await _environment.Output.WriteLineAsync($"Stopped model '{name}'.").ConfigureAwait(false);
+        }
+
+        return 0;
+    }
+
+    private async Task<int> RunListAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        string? podName = null;
+
+        for (var index = 0; index < args.Count; index++)
+        {
+            if (args[index] == "--pod")
+            {
+                podName = ReadRequiredValue(args, ref index, "--pod");
+                continue;
+            }
+
+            throw new InvalidOperationException($"Unexpected argument '{args[index]}'.");
+        }
+
+        var models = await _podService.GetModelStatusesAsync(podName, verifyProcesses: true, cancellationToken).ConfigureAwait(false);
+        if (models.Count == 0)
+        {
+            await _environment.Output.WriteLineAsync("No models running on the selected pod.").ConfigureAwait(false);
+            return 0;
+        }
+
+        await _environment.Output.WriteLineAsync($"Models on pod '{models[0].PodName}':").ConfigureAwait(false);
+        foreach (var model in models)
+        {
+            var gpuText = model.Deployment.GpuIds.Count switch
+            {
+                0 => "GPU unknown",
+                1 => $"GPU {model.Deployment.GpuIds[0]}",
+                _ => $"GPUs {string.Join(",", model.Deployment.GpuIds)}",
+            };
+
+            await _environment.Output.WriteLineAsync(
+                    $"  {model.Name} - Port {model.Deployment.Port} - {gpuText} - PID {model.Deployment.ProcessId} - {model.Status}")
+                .ConfigureAwait(false);
+            await _environment.Output.WriteLineAsync($"    Model: {model.Deployment.ModelId}").ConfigureAwait(false);
+            await _environment.Output.WriteLineAsync($"    URL: http://{model.Host}:{model.Deployment.Port}/v1").ConfigureAwait(false);
+        }
+
+        return 0;
+    }
+
+    private async Task<int> RunLogsAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        if (args.Count == 0)
+        {
+            throw new InvalidOperationException("Usage: logs <name> [--pod <name>]");
+        }
+
+        var name = args[0];
+        string? podName = null;
+
+        for (var index = 1; index < args.Count; index++)
+        {
+            if (args[index] == "--pod")
+            {
+                podName = ReadRequiredValue(args, ref index, "--pod");
+                continue;
+            }
+
+            throw new InvalidOperationException($"Unexpected argument '{args[index]}'.");
+        }
+
+        await _podService.StreamLogsAsync(name, podName, WritePodOutputAsync, cancellationToken).ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<int> RunAgentAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        if (args.Count == 0)
+        {
+            throw new InvalidOperationException("Usage: agent <name> [message...] [--pod <name>] [--api-key <key>] [--cwd <dir>] [--thinking <level>]");
+        }
+
+        var deploymentName = args[0];
+        string? podName = null;
+        string? apiKey = null;
+        string? workingDirectory = null;
+        var thinkingLevel = ThinkingLevel.Off;
+        var messages = new List<string>();
+
+        for (var index = 1; index < args.Count; index++)
+        {
+            switch (args[index])
+            {
+                case "--pod":
+                    podName = ReadRequiredValue(args, ref index, "--pod");
+                    break;
+                case "--api-key":
+                    apiKey = ReadRequiredValue(args, ref index, "--api-key");
+                    break;
+                case "--cwd":
+                case "--working-directory":
+                    workingDirectory = ReadRequiredValue(args, ref index, args[index]);
+                    break;
+                case "--thinking":
+                    var level = ReadRequiredValue(args, ref index, "--thinking");
+                    if (!ThinkingLevels.TryGetValue(level, out thinkingLevel))
+                    {
+                        throw new InvalidOperationException($"Invalid thinking level '{level}'.");
+                    }
+
+                    break;
+                default:
+                    if (args[index].StartsWith("-", StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException($"Unknown option '{args[index]}'.");
+                    }
+
+                    messages.Add(args[index]);
+                    break;
+            }
+        }
+
+        var prompt = await BuildPromptAsync(messages).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            throw new InvalidOperationException("No prompt provided. Interactive mode is not implemented yet.");
+        }
+
+        var endpoint = _podService.ResolveEndpoint(deploymentName, podName, apiKey);
+        var agent = _podAgentFactory.Create(
+            endpoint,
+            new PodAgentFactoryOptions
+            {
+                ApiKey = apiKey,
+                WorkingDirectory = workingDirectory ?? _environment.CurrentDirectory,
+                ThinkingLevel = thinkingLevel,
+            });
+
+        var reporter = new StreamingConsoleReporter(_environment.Output, _environment.Error);
+        agent.Subscribe(reporter.OnAgentEventAsync);
+        await agent.PromptAsync(prompt, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await reporter.FlushAsync().ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<string> BuildPromptAsync(IReadOnlyList<string> messages)
+    {
+        var parts = new List<string>();
+
+        if (_environment.IsInputRedirected)
+        {
+            var stdin = await _environment.Input.ReadToEndAsync().ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(stdin))
+            {
+                parts.Add(stdin.Trim());
+            }
+        }
+
+        if (messages.Count > 0)
+        {
+            parts.Add(string.Join(' ', messages));
+        }
+
+        return string.Join("\n\n", parts.Where(static part => !string.IsNullOrWhiteSpace(part)));
+    }
+
+    private async Task<int> UnknownCommandAsync(string command)
+    {
+        await _environment.Error.WriteLineAsync($"Unknown command '{command}'.").ConfigureAwait(false);
+        return 1;
+    }
+
+    private async Task<int> UnknownSubcommandAsync(string command, string subcommand)
+    {
+        await _environment.Error.WriteLineAsync($"Unknown subcommand '{command} {subcommand}'.").ConfigureAwait(false);
+        return 1;
+    }
+
+    private static bool IsHelp(string value) => value is "--help" or "-h";
+
+    private static bool IsVersion(string value) => value is "--version" or "-v";
+
+    private static string ReadRequiredValue(IReadOnlyList<string> args, ref int index, string optionName)
+    {
+        if (index + 1 >= args.Count)
+        {
+            throw new InvalidOperationException($"Missing value for '{optionName}'.");
+        }
+
+        return args[++index];
+    }
+
+    private static string GetVersionText() =>
+        typeof(PodsApplication).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+        ?? typeof(PodsApplication).Assembly.GetName().Version?.ToString()
+        ?? "0.0.0";
+
+    private async ValueTask WritePodOutputAsync(string text, bool isError, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var writer = isError ? _environment.Error : _environment.Output;
+        await writer.WriteAsync(text).ConfigureAwait(false);
+        await writer.FlushAsync().ConfigureAwait(false);
+    }
+
+    private sealed class StreamingConsoleReporter(TextWriter output, TextWriter error)
+    {
+        private bool _assistantLineOpen;
+
+        public ValueTask OnAgentEventAsync(AgentEvent @event, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            switch (@event)
+            {
+                case AgentEvent.MessageUpdated { AssistantMessageEvent: AssistantMessageEvent.TextDelta textDelta }:
+                    output.Write(textDelta.Text);
+                    _assistantLineOpen = true;
+                    break;
+
+                case AgentEvent.MessageCompleted completed when completed.Message.Role == ChatRole.Assistant:
+                    if (_assistantLineOpen)
+                    {
+                        output.WriteLine();
+                        _assistantLineOpen = false;
+                    }
+
+                    break;
+
+                case AgentEvent.ToolExecutionCompleted toolExecutionCompleted when toolExecutionCompleted.IsError:
+                    if (_assistantLineOpen)
+                    {
+                        output.WriteLine();
+                        _assistantLineOpen = false;
+                    }
+
+                    error.WriteLine($"[tool:error] {toolExecutionCompleted.ToolName} failed");
+                    break;
+            }
+
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask FlushAsync()
+        {
+            if (_assistantLineOpen)
+            {
+                output.WriteLine();
+                _assistantLineOpen = false;
+            }
+
+            output.Flush();
+            error.Flush();
+            return ValueTask.CompletedTask;
+        }
+    }
+}

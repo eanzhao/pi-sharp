@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using PiSharp.Agent;
 using PiSharp.Ai;
 using PiSharp.CodingAgent;
+using PiSharp.Pods;
 using PiSharp.Tui;
 
 namespace PiSharp.Cli;
@@ -93,23 +94,40 @@ public sealed class CliEnvironment
 
 public sealed class CliApplication
 {
+    private static readonly string[] PodEnvironmentVariables =
+    [
+        PodsDefaults.PiApiKeyEnvironmentVariable,
+        PodsDefaults.PiConfigDirectoryEnvironmentVariable,
+        "HF_TOKEN",
+        "HOME",
+        "USERPROFILE",
+    ];
+
     private readonly CliEnvironment _environment;
     private readonly CodingAgentProviderCatalog _providerCatalog;
     private readonly Func<string, string, SettingsManager> _createSettingsManager;
+    private readonly Func<IReadOnlyList<string>, CancellationToken, Task<int>> _runPodsCommand;
 
     public CliApplication(
         CliEnvironment? environment = null,
         CodingAgentProviderCatalog? providerCatalog = null,
-        Func<string, string, SettingsManager>? createSettingsManager = null)
+        Func<string, string, SettingsManager>? createSettingsManager = null,
+        Func<IReadOnlyList<string>, CancellationToken, Task<int>>? runPodsCommand = null)
     {
         _environment = environment ?? CliEnvironment.CreateProcessEnvironment();
         _providerCatalog = providerCatalog ?? CodingAgentProviderCatalog.CreateDefault();
         _createSettingsManager = createSettingsManager ?? SettingsManager.Create;
+        _runPodsCommand = runPodsCommand ?? RunPodsCommandAsync;
     }
 
     public async Task<int> RunAsync(IReadOnlyList<string> args, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(args);
+
+        if (IsPodsCommand(args))
+        {
+            return await _runPodsCommand(NormalizePodsArgs(args), cancellationToken).ConfigureAwait(false);
+        }
 
         var parsed = CliArgumentsParser.Parse(args);
         ReportDiagnostics(parsed.Diagnostics.Where(static diagnostic => diagnostic.Severity == CliDiagnosticSeverity.Warning));
@@ -241,6 +259,40 @@ public sealed class CliApplication
         await reporter.FlushAsync().ConfigureAwait(false);
         return 0;
     }
+
+    private Task<int> RunPodsCommandAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        var podsEnvironmentVariables = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var variableName in PodEnvironmentVariables)
+        {
+            var value = _environment.GetEnvironmentVariable(variableName);
+            if (value is not null)
+            {
+                podsEnvironmentVariables[variableName] = value;
+            }
+        }
+
+        var podsApplication = new PodsApplication(
+            new PodsConsoleEnvironment(
+                _environment.Input,
+                _environment.Output,
+                _environment.Error,
+                _environment.CurrentDirectory,
+                _environment.IsInputRedirected,
+                environmentVariables: podsEnvironmentVariables),
+            appName: "pisharp",
+            namespaced: true);
+
+        return podsApplication.RunAsync(args, cancellationToken);
+    }
+
+    private static bool IsPodsCommand(IReadOnlyList<string> args) =>
+        args.Count > 0 && string.Equals(args[0], "pods", StringComparison.Ordinal);
+
+    private static IReadOnlyList<string> NormalizePodsArgs(IReadOnlyList<string> args) =>
+        args.Count == 1
+            ? ["pods"]
+            : args.Skip(1).ToArray();
 
     private async Task<int> RunInteractiveAsync(
         CodingAgentSession session,

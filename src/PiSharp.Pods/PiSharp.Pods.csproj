@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12.0</LangVersion>
+    <NoWarn>$(NoWarn);OPENAI001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.4.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PiSharp.Ai/PiSharp.Ai.csproj" />
+    <ProjectReference Include="../PiSharp.Agent/PiSharp.Agent.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Models/models.json" LogicalName="PiSharp.Pods.Models.models.json" />
+    <EmbeddedResource Include="Scripts/pod_setup.sh" LogicalName="PiSharp.Pods.Scripts.pod_setup.sh" />
+    <EmbeddedResource Include="Scripts/model_run.sh" LogicalName="PiSharp.Pods.Scripts.model_run.sh" />
+  </ItemGroup>
+</Project>

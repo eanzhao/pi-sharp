@@ -8,10 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../PiSharp.Ai/PiSharp.Ai.csproj" />
-    <ProjectReference Include="../PiSharp.Agent/PiSharp.Agent.csproj" />
-    <ProjectReference Include="../PiSharp.CodingAgent/PiSharp.CodingAgent.csproj" />
     <ProjectReference Include="../PiSharp.Pods/PiSharp.Pods.csproj" />
-    <ProjectReference Include="../PiSharp.Tui/PiSharp.Tui.csproj" />
   </ItemGroup>
 </Project>
