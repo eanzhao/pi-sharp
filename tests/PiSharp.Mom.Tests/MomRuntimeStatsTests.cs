@@ -1,3 +1,5 @@
+using System.Net.Http;
+using System.Text.Json;
 using PiSharp.Mom;
 
 namespace PiSharp.Mom.Tests;
@@ -13,16 +15,16 @@ public sealed class MomRuntimeStatsTests
         var bootstrapFailureAt = new DateTimeOffset(2026, 4, 16, 1, 4, 6, TimeSpan.Zero);
         var gapAt = new DateTimeOffset(2026, 4, 16, 1, 5, 6, TimeSpan.Zero);
         var gapFailureAt = new DateTimeOffset(2026, 4, 16, 1, 5, 7, TimeSpan.Zero);
-        var bootstrapFailureReason = "bootstrap timed out after retry";
-        var gapFailureReason = "gap history fetch failed";
+        var bootstrapFailure = new InvalidOperationException("Slack API 'conversations.history' failed: not_authed");
+        var gapFailure = new HttpRequestException("gap history fetch failed");
         var stats = new MomRuntimeStats();
 
         stats.RecordStartupBackfill(new MomBackfillResult(2, 5), startupAt);
         stats.RecordReconnect(7, reconnectAt);
         stats.RecordBootstrapBackfill("general (C123)", 3, bootstrapAt);
-        stats.RecordBootstrapBackfillFailure("alerts (C456)", bootstrapFailureReason, bootstrapFailureAt);
+        stats.RecordBootstrapBackfillFailure("alerts (C456)", bootstrapFailure, bootstrapFailureAt);
         stats.RecordReconnectGapBackfill("general (C123)", 4, gapAt);
-        stats.RecordReconnectGapBackfillFailure("alerts (C456)", gapFailureReason, gapFailureAt);
+        stats.RecordReconnectGapBackfillFailure("alerts (C456)", gapFailure, gapFailureAt);
 
         var snapshot = stats.Snapshot();
 
@@ -39,7 +41,8 @@ public sealed class MomRuntimeStatsTests
         Assert.Equal("general (C123)", snapshot.LastBootstrapBackfillChannel);
         Assert.Equal(bootstrapFailureAt, snapshot.LastBootstrapBackfillFailureAt);
         Assert.Equal("alerts (C456)", snapshot.LastBootstrapBackfillFailureChannel);
-        Assert.Equal(bootstrapFailureReason, snapshot.LastBootstrapBackfillFailureReason);
+        Assert.Equal("Slack API 'conversations.history' failed: not_authed", snapshot.LastBootstrapBackfillFailureReason);
+        Assert.Equal("auth", snapshot.LastBootstrapBackfillFailureKind);
         Assert.Equal(1, snapshot.ReconnectGapBackfillCount);
         Assert.Equal(4, snapshot.ReconnectGapBackfillMessages);
         Assert.Equal(1, snapshot.ReconnectGapBackfillFailures);
@@ -47,10 +50,11 @@ public sealed class MomRuntimeStatsTests
         Assert.Equal("general (C123)", snapshot.LastReconnectGapBackfillChannel);
         Assert.Equal(gapFailureAt, snapshot.LastReconnectGapBackfillFailureAt);
         Assert.Equal("alerts (C456)", snapshot.LastReconnectGapBackfillFailureChannel);
-        Assert.Equal(gapFailureReason, snapshot.LastReconnectGapBackfillFailureReason);
+        Assert.Equal("gap history fetch failed", snapshot.LastReconnectGapBackfillFailureReason);
+        Assert.Equal("network", snapshot.LastReconnectGapBackfillFailureKind);
 
         Assert.Equal(
-            "Runtime stats: startup_channels=2 startup_messages=5 last_startup_backfill=2026-04-16T01:02:03.0000000+00:00 reconnects=1 last_reconnect=2026-04-16T01:03:04.0000000+00:00 last_reconnect_generation=7 bootstrap_backfills=1 bootstrap_messages=3 bootstrap_failures=1 last_bootstrap_backfill=2026-04-16T01:04:05.0000000+00:00 last_bootstrap_channel=general (C123) last_bootstrap_failure=2026-04-16T01:04:06.0000000+00:00 last_bootstrap_failure_channel=alerts (C456) last_bootstrap_failure_reason=bootstrap timed out after retry reconnect_gap_backfills=1 reconnect_gap_messages=4 reconnect_gap_failures=1 last_reconnect_gap_backfill=2026-04-16T01:05:06.0000000+00:00 last_reconnect_gap_channel=general (C123) last_reconnect_gap_failure=2026-04-16T01:05:07.0000000+00:00 last_reconnect_gap_failure_channel=alerts (C456) last_reconnect_gap_failure_reason=gap history fetch failed",
+            "Runtime stats: startup_channels=2 startup_messages=5 last_startup_backfill=2026-04-16T01:02:03.0000000+00:00 reconnects=1 last_reconnect=2026-04-16T01:03:04.0000000+00:00 last_reconnect_generation=7 bootstrap_backfills=1 bootstrap_messages=3 bootstrap_failures=1 last_bootstrap_backfill=2026-04-16T01:04:05.0000000+00:00 last_bootstrap_channel=general (C123) last_bootstrap_failure=2026-04-16T01:04:06.0000000+00:00 last_bootstrap_failure_channel=alerts (C456) last_bootstrap_failure_reason=Slack API 'conversations.history' failed: not_authed last_bootstrap_failure_kind=auth reconnect_gap_backfills=1 reconnect_gap_messages=4 reconnect_gap_failures=1 last_reconnect_gap_backfill=2026-04-16T01:05:06.0000000+00:00 last_reconnect_gap_channel=general (C123) last_reconnect_gap_failure=2026-04-16T01:05:07.0000000+00:00 last_reconnect_gap_failure_channel=alerts (C456) last_reconnect_gap_failure_reason=gap history fetch failed last_reconnect_gap_failure_kind=network",
             stats.FormatSummary());
     }
 
@@ -93,24 +97,26 @@ public sealed class MomRuntimeStatsTests
                 new DateTimeOffset(2026, 4, 16, 1, 5, 6, TimeSpan.Zero));
             second.RecordBootstrapBackfillFailure(
                 "alerts (C456)",
-                "bootstrap down",
+                new InvalidOperationException("Slack API 'conversations.history' failed: invalid_auth"),
                 new DateTimeOffset(2026, 4, 16, 1, 5, 7, TimeSpan.Zero));
             second.RecordReconnectGapBackfillFailure(
                 "alerts (C456)",
-                "gap down",
+                new TimeoutException("gap down"),
                 new DateTimeOffset(2026, 4, 16, 1, 5, 8, TimeSpan.Zero));
 
             var third = new MomRuntimeStats(filePath);
             var thirdSnapshot = third.Snapshot();
             Assert.Equal(1, thirdSnapshot.BootstrapBackfillFailures);
             Assert.Equal("alerts (C456)", thirdSnapshot.LastBootstrapBackfillFailureChannel);
-            Assert.Equal("bootstrap down", thirdSnapshot.LastBootstrapBackfillFailureReason);
+            Assert.Equal("Slack API 'conversations.history' failed: invalid_auth", thirdSnapshot.LastBootstrapBackfillFailureReason);
+            Assert.Equal("auth", thirdSnapshot.LastBootstrapBackfillFailureKind);
             Assert.Equal(1, thirdSnapshot.ReconnectGapBackfillCount);
             Assert.Equal(4, thirdSnapshot.ReconnectGapBackfillMessages);
             Assert.Equal("general (C123)", thirdSnapshot.LastReconnectGapBackfillChannel);
             Assert.Equal(1, thirdSnapshot.ReconnectGapBackfillFailures);
             Assert.Equal("alerts (C456)", thirdSnapshot.LastReconnectGapBackfillFailureChannel);
             Assert.Equal("gap down", thirdSnapshot.LastReconnectGapBackfillFailureReason);
+            Assert.Equal("timeout", thirdSnapshot.LastReconnectGapBackfillFailureKind);
         }
         finally
         {
@@ -159,8 +165,8 @@ public sealed class MomRuntimeStatsTests
             "",
             Enumerable.Repeat("very long failure reason ", 20));
 
-        stats.RecordBootstrapBackfillFailure("C123", "line one\n  line two\tline three");
-        stats.RecordReconnectGapBackfillFailure("C456", longReason);
+        stats.RecordBootstrapBackfillFailure("C123", new InvalidOperationException("line one\n  line two\tline three"));
+        stats.RecordReconnectGapBackfillFailure("C456", new InvalidOperationException(longReason));
 
         var snapshot = stats.Snapshot();
 
@@ -170,5 +176,24 @@ public sealed class MomRuntimeStatsTests
             snapshot.LastReconnectGapBackfillFailureReason!.Length <=
             MomDefaults.RuntimeFailureReasonSummaryCharacterLimit + 3);
         Assert.EndsWith("...", snapshot.LastReconnectGapBackfillFailureReason);
+    }
+
+    [Fact]
+    public void FailureKinds_AreClassifiedFromExceptions()
+    {
+        Assert.Equal("slack_api", RecordBootstrap(new InvalidOperationException("Slack API 'conversations.history' failed: channel_not_found")));
+        Assert.Equal("invalid_response", RecordBootstrap(new InvalidOperationException("Slack response is missing 'messages'.")));
+        Assert.Equal("window", RecordBootstrap(new ArgumentException("latest timestamp is invalid")));
+        Assert.Equal("cancelled", RecordBootstrap(new OperationCanceledException("cancelled")));
+        Assert.Equal("unknown", RecordBootstrap(new InvalidOperationException("plain runtime error")));
+
+        return;
+
+        static string RecordBootstrap(Exception exception)
+        {
+            var stats = new MomRuntimeStats();
+            stats.RecordBootstrapBackfillFailure("C123", exception);
+            return stats.Snapshot().LastBootstrapBackfillFailureKind!;
+        }
     }
 }

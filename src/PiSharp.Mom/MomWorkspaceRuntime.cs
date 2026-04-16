@@ -186,7 +186,7 @@ public sealed class MomWorkspaceRuntime
             {
                 _runtimeStats?.RecordBootstrapBackfillFailure(
                     channelDescription,
-                    exception.Message,
+                    exception,
                     DateTimeOffset.UtcNow);
                 await ReportNoticeAsync(
                         $"Bootstrap backfill failed for {channelDescription}: {exception.Message}",
@@ -240,7 +240,7 @@ public sealed class MomWorkspaceRuntime
         {
             _runtimeStats?.RecordReconnectGapBackfillFailure(
                 channelDescription,
-                exception.Message,
+                exception,
                 DateTimeOffset.UtcNow);
             await ReportNoticeAsync(
                     $"Reconnect gap backfill failed for {channelDescription} after reconnect #{incomingEvent.ConnectionGeneration}: {exception.Message}",

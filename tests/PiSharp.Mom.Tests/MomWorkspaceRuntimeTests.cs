@@ -432,7 +432,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
             });
 
         using var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
-            throw new InvalidOperationException("backfill down")));
+            throw new HttpRequestException("backfill down")));
         using var historyClient = new SlackWebApiClient("xoxb-test", httpClient);
         using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
         var backfiller = new MomLogBackfiller(historyClient, store);
@@ -490,6 +490,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Equal("C123", snapshot.LastBootstrapBackfillFailureChannel);
         Assert.NotNull(snapshot.LastBootstrapBackfillFailureAt);
         Assert.Equal("backfill down", snapshot.LastBootstrapBackfillFailureReason);
+        Assert.Equal("network", snapshot.LastBootstrapBackfillFailureKind);
     }
 
     [Fact]
@@ -636,7 +637,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
             });
 
         using var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
-            throw new InvalidOperationException("gap backfill down")));
+            throw new HttpRequestException("gap backfill down")));
         using var historyClient = new SlackWebApiClient("xoxb-test", httpClient);
         using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
         await store.LogIncomingEventAsync(new SlackIncomingEvent(
@@ -706,6 +707,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Equal("C123", snapshot.LastReconnectGapBackfillFailureChannel);
         Assert.NotNull(snapshot.LastReconnectGapBackfillFailureAt);
         Assert.Equal("gap backfill down", snapshot.LastReconnectGapBackfillFailureReason);
+        Assert.Equal("network", snapshot.LastReconnectGapBackfillFailureKind);
     }
 
     private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>

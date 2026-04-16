@@ -18,6 +18,7 @@ public sealed record MomRuntimeStatsSnapshot(
     DateTimeOffset? LastBootstrapBackfillFailureAt,
     string? LastBootstrapBackfillFailureChannel,
     string? LastBootstrapBackfillFailureReason,
+    string? LastBootstrapBackfillFailureKind,
     int ReconnectGapBackfillCount,
     int ReconnectGapBackfillMessages,
     int ReconnectGapBackfillFailures,
@@ -25,7 +26,8 @@ public sealed record MomRuntimeStatsSnapshot(
     string? LastReconnectGapBackfillChannel,
     DateTimeOffset? LastReconnectGapBackfillFailureAt,
     string? LastReconnectGapBackfillFailureChannel,
-    string? LastReconnectGapBackfillFailureReason);
+    string? LastReconnectGapBackfillFailureReason,
+    string? LastReconnectGapBackfillFailureKind);
 
 public sealed class MomRuntimeStats
 {
@@ -52,6 +54,7 @@ public sealed class MomRuntimeStats
     private DateTimeOffset? _lastBootstrapBackfillFailureAt;
     private string? _lastBootstrapBackfillFailureChannel;
     private string? _lastBootstrapBackfillFailureReason;
+    private string? _lastBootstrapBackfillFailureKind;
     private int _reconnectGapBackfillCount;
     private int _reconnectGapBackfillMessages;
     private int _reconnectGapBackfillFailures;
@@ -60,6 +63,7 @@ public sealed class MomRuntimeStats
     private DateTimeOffset? _lastReconnectGapBackfillFailureAt;
     private string? _lastReconnectGapBackfillFailureChannel;
     private string? _lastReconnectGapBackfillFailureReason;
+    private string? _lastReconnectGapBackfillFailureKind;
 
     public MomRuntimeStats(string? persistencePath = null)
     {
@@ -113,17 +117,19 @@ public sealed class MomRuntimeStats
 
     public void RecordBootstrapBackfillFailure(
         string channel,
-        string reason,
+        Exception exception,
         DateTimeOffset? occurredAt = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+        ArgumentNullException.ThrowIfNull(exception);
 
         lock (_syncRoot)
         {
             _bootstrapBackfillFailures++;
             _lastBootstrapBackfillFailureAt = occurredAt ?? DateTimeOffset.UtcNow;
             _lastBootstrapBackfillFailureChannel = channel;
-            _lastBootstrapBackfillFailureReason = SummarizeReason(reason);
+            _lastBootstrapBackfillFailureReason = SummarizeReason(exception.Message);
+            _lastBootstrapBackfillFailureKind = ClassifyFailure(exception);
             PersistLocked();
         }
     }
@@ -144,17 +150,19 @@ public sealed class MomRuntimeStats
 
     public void RecordReconnectGapBackfillFailure(
         string channel,
-        string reason,
+        Exception exception,
         DateTimeOffset? occurredAt = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+        ArgumentNullException.ThrowIfNull(exception);
 
         lock (_syncRoot)
         {
             _reconnectGapBackfillFailures++;
             _lastReconnectGapBackfillFailureAt = occurredAt ?? DateTimeOffset.UtcNow;
             _lastReconnectGapBackfillFailureChannel = channel;
-            _lastReconnectGapBackfillFailureReason = SummarizeReason(reason);
+            _lastReconnectGapBackfillFailureReason = SummarizeReason(exception.Message);
+            _lastReconnectGapBackfillFailureKind = ClassifyFailure(exception);
             PersistLocked();
         }
     }
@@ -185,6 +193,7 @@ public sealed class MomRuntimeStats
             $"last_bootstrap_failure={FormatTimestamp(snapshot.LastBootstrapBackfillFailureAt)} " +
             $"last_bootstrap_failure_channel={snapshot.LastBootstrapBackfillFailureChannel ?? "none"} " +
             $"last_bootstrap_failure_reason={snapshot.LastBootstrapBackfillFailureReason ?? "none"} " +
+            $"last_bootstrap_failure_kind={snapshot.LastBootstrapBackfillFailureKind ?? "unknown"} " +
             $"reconnect_gap_backfills={snapshot.ReconnectGapBackfillCount} " +
             $"reconnect_gap_messages={snapshot.ReconnectGapBackfillMessages} " +
             $"reconnect_gap_failures={snapshot.ReconnectGapBackfillFailures} " +
@@ -192,7 +201,8 @@ public sealed class MomRuntimeStats
             $"last_reconnect_gap_channel={snapshot.LastReconnectGapBackfillChannel ?? "none"} " +
             $"last_reconnect_gap_failure={FormatTimestamp(snapshot.LastReconnectGapBackfillFailureAt)} " +
             $"last_reconnect_gap_failure_channel={snapshot.LastReconnectGapBackfillFailureChannel ?? "none"} " +
-            $"last_reconnect_gap_failure_reason={snapshot.LastReconnectGapBackfillFailureReason ?? "none"}";
+            $"last_reconnect_gap_failure_reason={snapshot.LastReconnectGapBackfillFailureReason ?? "none"} " +
+            $"last_reconnect_gap_failure_kind={snapshot.LastReconnectGapBackfillFailureKind ?? "unknown"}";
     }
 
     private MomRuntimeStatsSnapshot BuildSnapshot() =>
@@ -211,6 +221,7 @@ public sealed class MomRuntimeStats
             _lastBootstrapBackfillFailureAt,
             _lastBootstrapBackfillFailureChannel,
             _lastBootstrapBackfillFailureReason,
+            _lastBootstrapBackfillFailureKind,
             _reconnectGapBackfillCount,
             _reconnectGapBackfillMessages,
             _reconnectGapBackfillFailures,
@@ -218,7 +229,8 @@ public sealed class MomRuntimeStats
             _lastReconnectGapBackfillChannel,
             _lastReconnectGapBackfillFailureAt,
             _lastReconnectGapBackfillFailureChannel,
-            _lastReconnectGapBackfillFailureReason);
+            _lastReconnectGapBackfillFailureReason,
+            _lastReconnectGapBackfillFailureKind);
 
     private void LoadFromFile(string filePath)
     {
@@ -251,6 +263,7 @@ public sealed class MomRuntimeStats
             _lastBootstrapBackfillFailureAt = snapshot.LastBootstrapBackfillFailureAt;
             _lastBootstrapBackfillFailureChannel = snapshot.LastBootstrapBackfillFailureChannel;
             _lastBootstrapBackfillFailureReason = snapshot.LastBootstrapBackfillFailureReason;
+            _lastBootstrapBackfillFailureKind = snapshot.LastBootstrapBackfillFailureKind;
             _reconnectGapBackfillCount = snapshot.ReconnectGapBackfillCount;
             _reconnectGapBackfillMessages = snapshot.ReconnectGapBackfillMessages;
             _reconnectGapBackfillFailures = snapshot.ReconnectGapBackfillFailures;
@@ -259,6 +272,7 @@ public sealed class MomRuntimeStats
             _lastReconnectGapBackfillFailureAt = snapshot.LastReconnectGapBackfillFailureAt;
             _lastReconnectGapBackfillFailureChannel = snapshot.LastReconnectGapBackfillFailureChannel;
             _lastReconnectGapBackfillFailureReason = snapshot.LastReconnectGapBackfillFailureReason;
+            _lastReconnectGapBackfillFailureKind = snapshot.LastReconnectGapBackfillFailureKind;
         }
         catch
         {
@@ -287,6 +301,62 @@ public sealed class MomRuntimeStats
     private static string FormatTimestamp(DateTimeOffset? timestamp) =>
         timestamp?.ToString("O") ?? "none";
 
+    private static string ClassifyFailure(Exception exception)
+    {
+        if (exception is OperationCanceledException)
+        {
+            return "cancelled";
+        }
+
+        if (exception is TimeoutException)
+        {
+            return "timeout";
+        }
+
+        if (exception is HttpRequestException)
+        {
+            return "network";
+        }
+
+        if (exception is IOException)
+        {
+            return "network";
+        }
+
+        if (exception is JsonException)
+        {
+            return "invalid_response";
+        }
+
+        if (exception is ArgumentException or FormatException)
+        {
+            return "window";
+        }
+
+        var message = exception.Message ?? string.Empty;
+        if (ContainsAuthError(message))
+        {
+            return "auth";
+        }
+
+        if (message.StartsWith("Slack API '", StringComparison.Ordinal))
+        {
+            return "slack_api";
+        }
+
+        if (message.StartsWith("Slack response is missing '", StringComparison.Ordinal))
+        {
+            return "invalid_response";
+        }
+
+        if (ContainsWindowError(message))
+        {
+            return "window";
+        }
+
+        return "unknown";
+    }
+
     private static string SummarizeReason(string reason)
     {
         var normalized = WhitespacePattern.Replace(reason ?? string.Empty, " ").Trim();
@@ -303,4 +373,19 @@ public sealed class MomRuntimeStats
         return
             $"{normalized[..MomDefaults.RuntimeFailureReasonSummaryCharacterLimit].TrimEnd()}...";
     }
+
+    private static bool ContainsAuthError(string message) =>
+        message.Contains("invalid_auth", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("not_authed", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("token_revoked", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("account_inactive", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("missing_scope", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("not allowed token type", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ContainsWindowError(string message) =>
+        message.Contains("timestamp", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("oldest", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("latest", StringComparison.OrdinalIgnoreCase) ||
+        message.Contains("cutoff", StringComparison.OrdinalIgnoreCase);
 }
