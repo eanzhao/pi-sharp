@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 namespace PiSharp.Mom;
 
 public sealed record MomLoggedAttachment(string Original, string? Local = null);
+public sealed record MomLogWriteResult(MomLoggedMessage Message, bool IsDuplicate = false);
 
 public sealed record MomLoggedMessage
 {
@@ -89,9 +90,14 @@ public sealed class MomChannelStore : IDisposable
         return path;
     }
 
-    public async Task LogMessageAsync(string channelId, MomLoggedMessage message, CancellationToken cancellationToken = default)
+    public async Task<bool> LogMessageAsync(string channelId, MomLoggedMessage message, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(message);
+
+        if (ReadLoggedMessage(channelId, message.Ts) is not null)
+        {
+            return false;
+        }
 
         var normalized = message with
         {
@@ -100,19 +106,28 @@ public sealed class MomChannelStore : IDisposable
                 : message.Date,
         };
 
+        var logPath = GetLogFilePath(channelId);
         var json = JsonSerializer.Serialize(normalized, JsonOptions);
+        var prefix = NeedsLeadingNewLine(logPath) ? Environment.NewLine : string.Empty;
         await File.AppendAllTextAsync(
-                GetLogFilePath(channelId),
-                json + Environment.NewLine,
+                logPath,
+                prefix + json + Environment.NewLine,
                 cancellationToken)
             .ConfigureAwait(false);
+        return true;
     }
 
-    public async Task<MomLoggedMessage> LogIncomingEventAsync(
+    public async Task<MomLogWriteResult> LogIncomingEventAsync(
         SlackIncomingEvent incomingEvent,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(incomingEvent);
+
+        var existing = ReadLoggedMessage(incomingEvent.ChannelId, incomingEvent.Timestamp);
+        if (existing is not null)
+        {
+            return new MomLogWriteResult(existing, IsDuplicate: true);
+        }
 
         var message = new MomLoggedMessage
         {
@@ -128,8 +143,50 @@ public sealed class MomChannelStore : IDisposable
             IsBot = false,
         };
 
-        await LogMessageAsync(incomingEvent.ChannelId, message, cancellationToken).ConfigureAwait(false);
-        return message;
+        var logged = await LogMessageAsync(incomingEvent.ChannelId, message, cancellationToken).ConfigureAwait(false);
+        if (!logged)
+        {
+            return new MomLogWriteResult(ReadLoggedMessage(incomingEvent.ChannelId, incomingEvent.Timestamp) ?? message, IsDuplicate: true);
+        }
+
+        return new MomLogWriteResult(message);
+    }
+
+    public async Task<MomLogWriteResult> LogSlackMessageAsync(
+        string channelId,
+        string userId,
+        string text,
+        string timestamp,
+        IReadOnlyList<SlackFileReference>? files,
+        bool isBot,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(timestamp);
+
+        var existing = ReadLoggedMessage(channelId, timestamp);
+        if (existing is not null)
+        {
+            return new MomLogWriteResult(existing, IsDuplicate: true);
+        }
+
+        var message = new MomLoggedMessage
+        {
+            Ts = timestamp,
+            User = userId,
+            Text = text,
+            Attachments = await DownloadAttachmentsAsync(channelId, files, timestamp, cancellationToken).ConfigureAwait(false),
+            IsBot = isBot,
+        };
+
+        var logged = await LogMessageAsync(channelId, message, cancellationToken).ConfigureAwait(false);
+        if (!logged)
+        {
+            return new MomLogWriteResult(ReadLoggedMessage(channelId, timestamp) ?? message, IsDuplicate: true);
+        }
+
+        return new MomLogWriteResult(message);
     }
 
     public Task LogBotResponseAsync(
@@ -137,17 +194,74 @@ public sealed class MomChannelStore : IDisposable
         string text,
         string timestamp,
         CancellationToken cancellationToken = default) =>
-        LogMessageAsync(
-            channelId,
-            new MomLoggedMessage
+        LogBotResponseCoreAsync(channelId, text, timestamp, cancellationToken);
+
+    public IEnumerable<string> EnumerateLoggedChannels()
+    {
+        if (!Directory.Exists(WorkspaceDirectory))
+        {
+            yield break;
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(WorkspaceDirectory))
+        {
+            var channelId = Path.GetFileName(directory);
+            if (string.Equals(channelId, MomDefaults.EventsDirectoryName, StringComparison.Ordinal))
             {
-                Date = DateTimeOffset.UtcNow.ToString("O"),
-                Ts = timestamp,
-                User = "bot",
-                Text = text,
-                IsBot = true,
-            },
-            cancellationToken);
+                continue;
+            }
+
+            if (File.Exists(Path.Combine(directory, MomDefaults.LogFileName)))
+            {
+                yield return channelId;
+            }
+        }
+    }
+
+    public string? GetLatestLoggedTimestamp(string channelId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+
+        var logPath = GetLogFilePath(channelId);
+        if (!File.Exists(logPath))
+        {
+            return null;
+        }
+
+        string? latestTimestamp = null;
+        double latestValue = double.MinValue;
+
+        foreach (var line in File.ReadLines(logPath))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            MomLoggedMessage? entry;
+            try
+            {
+                entry = JsonSerializer.Deserialize<MomLoggedMessage>(line, JsonOptions);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (entry is null || !TryParseSlackTimestamp(entry.Ts, out var timestampValue))
+            {
+                continue;
+            }
+
+            if (timestampValue > latestValue)
+            {
+                latestValue = timestampValue;
+                latestTimestamp = entry.Ts;
+            }
+        }
+
+        return latestTimestamp;
+    }
 
     public string ReadMemory(string channelId)
     {
@@ -221,6 +335,26 @@ public sealed class MomChannelStore : IDisposable
         {
             _httpClient?.Dispose();
         }
+    }
+
+    private async Task LogBotResponseCoreAsync(
+        string channelId,
+        string text,
+        string timestamp,
+        CancellationToken cancellationToken)
+    {
+        await LogMessageAsync(
+                channelId,
+                new MomLoggedMessage
+                {
+                    Date = DateTimeOffset.UtcNow.ToString("O"),
+                    Ts = timestamp,
+                    User = "bot",
+                    Text = text,
+                    IsBot = true,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task<IReadOnlyList<MomLoggedAttachment>> DownloadAttachmentsAsync(
@@ -306,11 +440,32 @@ public sealed class MomChannelStore : IDisposable
 
     private static DateTimeOffset ParseTimestamp(string timestamp)
     {
-        if (double.TryParse(timestamp, NumberStyles.Float, CultureInfo.InvariantCulture, out var slackTimestamp))
+        if (TryParseSlackTimestamp(timestamp, out var slackTimestamp))
         {
             return DateTimeOffset.FromUnixTimeMilliseconds((long)Math.Floor(slackTimestamp * 1000));
         }
 
         return DateTimeOffset.UtcNow;
+    }
+
+    private static bool TryParseSlackTimestamp(string timestamp, out double value) =>
+        double.TryParse(timestamp, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+
+    private static bool NeedsLeadingNewLine(string logPath)
+    {
+        if (!File.Exists(logPath))
+        {
+            return false;
+        }
+
+        using var stream = File.Open(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        if (stream.Length == 0)
+        {
+            return false;
+        }
+
+        stream.Seek(-1, SeekOrigin.End);
+        var lastByte = stream.ReadByte();
+        return lastByte != '\n';
     }
 }

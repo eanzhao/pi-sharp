@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Globalization;
 using PiSharp.CodingAgent;
 
 namespace PiSharp.Mom;
@@ -160,12 +161,23 @@ Examples:
             store);
 
         var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient, store);
+        var backfiller = new MomLogBackfiller(slackClient, store);
+        var backfillResult = await backfiller.BackfillAllAsync(auth.UserId, cancellationToken).ConfigureAwait(false);
         var socketModeClient = new SlackSocketModeClient(slackClient, slackAppToken);
         using var eventsWatcher = new MomEventsWatcher(workspaceDirectory, runtime.DispatchAsync);
         eventsWatcher.Start(cancellationToken);
 
+        if (backfillResult.ChannelsScanned > 0)
+        {
+            await _environment.Output.WriteLineAsync(
+                    $"Backfilled {backfillResult.MessagesLogged} messages across {backfillResult.ChannelsScanned} channels")
+                .ConfigureAwait(false);
+        }
+
+        var responseCutoffTimestamp = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000d)
+            .ToString("F6", CultureInfo.InvariantCulture);
         await _environment.Output.WriteLineAsync($"Listening for Slack events in {workspaceDirectory}").ConfigureAwait(false);
-        await socketModeClient.RunAsync(auth.UserId, runtime.DispatchAsync, cancellationToken).ConfigureAwait(false);
+        await socketModeClient.RunAsync(auth.UserId, runtime.DispatchAsync, responseCutoffTimestamp, cancellationToken).ConfigureAwait(false);
         return 0;
     }
 

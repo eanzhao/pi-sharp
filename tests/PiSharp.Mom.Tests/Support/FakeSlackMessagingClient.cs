@@ -12,6 +12,8 @@ internal sealed class FakeSlackMessagingClient : ISlackMessagingClient
 
     public List<(string ChannelId, string Timestamp)> Deletes { get; } = [];
 
+    public List<(string ChannelId, string FilePath, string? Title)> Uploads { get; } = [];
+
     public Task<SlackAuthInfo> AuthenticateAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(AuthInfo);
 
@@ -42,6 +44,16 @@ internal sealed class FakeSlackMessagingClient : ISlackMessagingClient
         CancellationToken cancellationToken = default)
     {
         Deletes.Add((channelId, timestamp));
+        return Task.CompletedTask;
+    }
+
+    public Task UploadFileAsync(
+        string channelId,
+        string filePath,
+        string? title = null,
+        CancellationToken cancellationToken = default)
+    {
+        Uploads.Add((channelId, filePath, title));
         return Task.CompletedTask;
     }
 }

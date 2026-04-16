@@ -25,7 +25,11 @@ public sealed class MomWorkspaceRuntime
 
         if (incomingEvent.ShouldLogToChannelLog)
         {
-            await _store.LogIncomingEventAsync(incomingEvent, cancellationToken).ConfigureAwait(false);
+            var logResult = await _store.LogIncomingEventAsync(incomingEvent, cancellationToken).ConfigureAwait(false);
+            if (logResult.IsDuplicate)
+            {
+                return;
+            }
         }
 
         if (!incomingEvent.RequiresResponse)

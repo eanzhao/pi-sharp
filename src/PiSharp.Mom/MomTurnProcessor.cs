@@ -108,6 +108,14 @@ public sealed class MomTurnProcessor
                         ActiveToolNames = BuiltInToolNames.All,
                         Messages = existingSession?.Messages,
                         OverrideSystemPrompt = systemPrompt,
+                        Extensions =
+                        [
+                            MomSlackTools.CreateAttachExtension(
+                                _options.WorkspaceDirectory,
+                                channelDirectory,
+                                incomingEvent.ChannelId,
+                                _slackClient),
+                        ],
                     },
                     cancellationToken)
                 .ConfigureAwait(false);

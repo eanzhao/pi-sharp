@@ -150,4 +150,21 @@ public sealed class SlackSocketModeClientTests
         Assert.False(parsed);
         Assert.Null(incomingEvent);
     }
+
+    [Fact]
+    public void ApplyResponseCutoff_DisablesResponsesForOlderMessages()
+    {
+        var incomingEvent = new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "hello",
+            "12345.1000",
+            "app_mention",
+            IsDirectMessage: false);
+
+        var adjusted = SlackSocketModeClient.ApplyResponseCutoff(incomingEvent, "12345.2000");
+
+        Assert.False(adjusted.RequiresResponse);
+        Assert.True(adjusted.ShouldLogToChannelLog);
+    }
 }

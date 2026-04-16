@@ -20,6 +20,18 @@ public sealed record SlackIncomingEvent(
 
 public sealed record SlackAuthInfo(string UserId);
 
+public sealed record SlackConversationHistoryMessage(
+    string Timestamp,
+    string? UserId,
+    string? BotId,
+    string Text,
+    string? Subtype = null,
+    IReadOnlyList<SlackFileReference>? Files = null);
+
+public sealed record SlackConversationHistoryPage(
+    IReadOnlyList<SlackConversationHistoryMessage> Messages,
+    string? NextCursor = null);
+
 public interface ISlackMessagingClient
 {
     Task<SlackAuthInfo> AuthenticateAsync(CancellationToken cancellationToken = default);
@@ -39,5 +51,11 @@ public interface ISlackMessagingClient
     Task DeleteMessageAsync(
         string channelId,
         string timestamp,
+        CancellationToken cancellationToken = default);
+
+    Task UploadFileAsync(
+        string channelId,
+        string filePath,
+        string? title = null,
         CancellationToken cancellationToken = default);
 }

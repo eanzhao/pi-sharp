@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 
 namespace PiSharp.Mom;
 
@@ -20,6 +21,7 @@ public sealed class SlackSocketModeClient
     public async Task RunAsync(
         string botUserId,
         Func<SlackIncomingEvent, CancellationToken, Task> onEventAsync,
+        string? responseCutoffTimestamp = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(botUserId);
@@ -31,7 +33,7 @@ public sealed class SlackSocketModeClient
             var socketUrl = await _webApiClient.OpenSocketConnectionAsync(_appToken, cancellationToken).ConfigureAwait(false);
             await socket.ConnectAsync(new Uri(socketUrl), cancellationToken).ConfigureAwait(false);
 
-            var reconnect = await ReceiveLoopAsync(socket, botUserId, onEventAsync, cancellationToken).ConfigureAwait(false);
+            var reconnect = await ReceiveLoopAsync(socket, botUserId, onEventAsync, responseCutoffTimestamp, cancellationToken).ConfigureAwait(false);
             if (!reconnect)
             {
                 return;
@@ -45,6 +47,7 @@ public sealed class SlackSocketModeClient
         ClientWebSocket socket,
         string botUserId,
         Func<SlackIncomingEvent, CancellationToken, Task> onEventAsync,
+        string? responseCutoffTimestamp,
         CancellationToken cancellationToken)
     {
         var buffer = new byte[8 * 1024];
@@ -92,6 +95,7 @@ public sealed class SlackSocketModeClient
 
             if (TryParseIncomingEvent(root, botUserId, out var incomingEvent) && incomingEvent is not null)
             {
+                incomingEvent = ApplyResponseCutoff(incomingEvent, responseCutoffTimestamp);
                 await onEventAsync(incomingEvent, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -169,6 +173,24 @@ public sealed class SlackSocketModeClient
         return true;
     }
 
+    public static SlackIncomingEvent ApplyResponseCutoff(
+        SlackIncomingEvent incomingEvent,
+        string? responseCutoffTimestamp)
+    {
+        ArgumentNullException.ThrowIfNull(incomingEvent);
+
+        if (!incomingEvent.RequiresResponse ||
+            string.IsNullOrWhiteSpace(responseCutoffTimestamp) ||
+            !TryParseTimestamp(incomingEvent.Timestamp, out var messageTimestamp) ||
+            !TryParseTimestamp(responseCutoffTimestamp, out var cutoffTimestamp) ||
+            messageTimestamp >= cutoffTimestamp)
+        {
+            return incomingEvent;
+        }
+
+        return incomingEvent with { RequiresResponse = false };
+    }
+
     private static async Task AcknowledgeAsync(
         ClientWebSocket socket,
         string envelopeId,
@@ -217,4 +239,7 @@ public sealed class SlackSocketModeClient
 
         return files;
     }
+
+    private static bool TryParseTimestamp(string value, out double timestamp) =>
+        double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out timestamp);
 }
