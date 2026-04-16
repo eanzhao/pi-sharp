@@ -24,7 +24,7 @@ public sealed class MomSlackMetadataService : IDisposable
             ? null
             : Path.GetFullPath(persistencePath);
         _timeProvider = timeProvider ?? TimeProvider.System;
-        _refreshInterval = refreshInterval ?? TimeSpan.FromMinutes(10);
+        _refreshInterval = refreshInterval ?? MomDefaults.SlackMetadataRefreshInterval;
         _lastRefreshUtcTicks = DateTimeOffset.MinValue.UtcTicks;
 
         var snapshot = _persistencePath is null

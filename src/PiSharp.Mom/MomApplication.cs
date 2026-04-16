@@ -51,6 +51,7 @@ public sealed class MomApplication
     private readonly Func<string, string, SettingsManager> _createSettingsManager;
     private readonly Func<MomCommandLineOptions, CancellationToken, Task<int>> _runBotAsync;
     private readonly Func<MomCommandLineOptions, CancellationToken, Task<int>> _runStatsAsync;
+    private readonly TimeProvider _timeProvider;
 
     public MomApplication(
         MomConsoleEnvironment? environment = null,
@@ -59,7 +60,8 @@ public sealed class MomApplication
         CodingAgentProviderCatalog? providerCatalog = null,
         Func<string, string, SettingsManager>? createSettingsManager = null,
         Func<MomCommandLineOptions, CancellationToken, Task<int>>? runBotAsync = null,
-        Func<MomCommandLineOptions, CancellationToken, Task<int>>? runStatsAsync = null)
+        Func<MomCommandLineOptions, CancellationToken, Task<int>>? runStatsAsync = null,
+        TimeProvider? timeProvider = null)
     {
         _environment = environment ?? MomConsoleEnvironment.CreateProcessEnvironment();
         _appName = string.IsNullOrWhiteSpace(appName) ? "pisharp-mom" : appName.Trim();
@@ -68,6 +70,7 @@ public sealed class MomApplication
         _createSettingsManager = createSettingsManager ?? SettingsManager.Create;
         _runBotAsync = runBotAsync ?? RunBotInternalAsync;
         _runStatsAsync = runStatsAsync ?? RunStatsInternalAsync;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<int> RunAsync(IReadOnlyList<string> args, CancellationToken cancellationToken = default)
@@ -307,7 +310,7 @@ Examples:
         var runtimeStatsFound = File.Exists(statsPath);
         MomRuntimeStats? runtimeStats = runtimeStatsFound ? new MomRuntimeStats(statsPath) : null;
         var snapshot = runtimeStats?.Snapshot();
-        var workspaceMetadata = LoadWorkspaceMetadataSummary(workspaceDirectory);
+        var workspaceMetadata = LoadWorkspaceMetadataSummary(workspaceDirectory, _timeProvider.GetUtcNow());
         var workspaceMetadataIndex = workspaceMetadata?.WorkspaceIndex;
         var channelStats = string.IsNullOrWhiteSpace(options.StatsChannelId)
             ? null
@@ -629,7 +632,9 @@ Examples:
             $"Local files: sessions={channelStats.SessionFileCount} attachment_files={channelStats.AttachmentFileCount} scratch_files={channelStats.ScratchFileCount} channel_memory={channelStats.ChannelMemoryExists}",
         ];
 
-    private static WorkspaceMetadataSummary? LoadWorkspaceMetadataSummary(string workspaceDirectory)
+    private static WorkspaceMetadataSummary? LoadWorkspaceMetadataSummary(
+        string workspaceDirectory,
+        DateTimeOffset utcNow)
     {
         var snapshot = MomSlackMetadataSnapshotStore.Load(
             Path.Combine(workspaceDirectory, MomDefaults.SlackMetadataFileName));
@@ -637,6 +642,8 @@ Examples:
             ? null
             : new WorkspaceMetadataSummary(
                 snapshot.RefreshedAt,
+                CalculateAge(snapshot.RefreshedAt, utcNow),
+                utcNow - snapshot.RefreshedAt >= MomDefaults.SlackMetadataRefreshInterval,
                 snapshot.Users.Count,
                 snapshot.Channels.Count,
                 new MomSlackWorkspaceIndex(snapshot.Users, snapshot.Channels));
@@ -645,16 +652,27 @@ Examples:
     private static string FormatWorkspaceMetadataSummary(WorkspaceMetadataSummary? workspaceMetadata) =>
         workspaceMetadata is null
             ? "Slack metadata: found=False"
-            : $"Slack metadata: found=True refreshed_at={FormatTimestamp(workspaceMetadata.RefreshedAt)} users={workspaceMetadata.UserCount} channels={workspaceMetadata.ChannelCount}";
+            : $"Slack metadata: found=True refreshed_at={FormatTimestamp(workspaceMetadata.RefreshedAt)} age={FormatAge(workspaceMetadata.Age)} status={(workspaceMetadata.IsStale ? "stale" : "fresh")} users={workspaceMetadata.UserCount} channels={workspaceMetadata.ChannelCount}";
 
     private static object BuildWorkspaceMetadataJson(WorkspaceMetadataSummary? workspaceMetadata) =>
         workspaceMetadata is null
-            ? new WorkspaceMetadataJson(false, null, null, null)
+            ? new WorkspaceMetadataJson(false, null, null, null, null, null)
             : new WorkspaceMetadataJson(
                 true,
                 workspaceMetadata.RefreshedAt,
+                workspaceMetadata.Age.TotalSeconds,
+                workspaceMetadata.IsStale ? "stale" : "fresh",
                 workspaceMetadata.UserCount,
                 workspaceMetadata.ChannelCount);
+
+    private static TimeSpan CalculateAge(DateTimeOffset refreshedAt, DateTimeOffset utcNow)
+    {
+        var age = utcNow - refreshedAt;
+        return age < TimeSpan.Zero ? TimeSpan.Zero : age;
+    }
+
+    private static string FormatAge(TimeSpan age) =>
+        age.ToString("c", CultureInfo.InvariantCulture);
 
     private static string ResolveUserLabel(
         MomLoggedMessage entry,
@@ -709,6 +727,8 @@ Examples:
 
     private sealed record WorkspaceMetadataSummary(
         DateTimeOffset RefreshedAt,
+        TimeSpan Age,
+        bool IsStale,
         int UserCount,
         int ChannelCount,
         MomSlackWorkspaceIndex WorkspaceIndex);
@@ -716,6 +736,8 @@ Examples:
     private sealed record WorkspaceMetadataJson(
         bool Found,
         DateTimeOffset? RefreshedAt,
+        double? AgeSeconds,
+        string? Status,
         int? UserCount,
         int? ChannelCount);
 }

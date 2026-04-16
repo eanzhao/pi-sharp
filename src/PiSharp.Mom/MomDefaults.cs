@@ -2,6 +2,8 @@ namespace PiSharp.Mom;
 
 public static class MomDefaults
 {
+    public static readonly TimeSpan SlackMetadataRefreshInterval = TimeSpan.FromMinutes(10);
+
     public const string SlackAppTokenEnvironmentVariable = "MOM_SLACK_APP_TOKEN";
     public const string SlackBotTokenEnvironmentVariable = "MOM_SLACK_BOT_TOKEN";
     public const string SessionDirectoryName = ".pi-sharp/sessions";

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using PiSharp.CodingAgent;
 using PiSharp.Mom;
+using PiSharp.Mom.Tests.Support;
 
 namespace PiSharp.Mom.Tests;
 
@@ -183,6 +184,7 @@ public sealed class MomApplicationTests
 
         try
         {
+            var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 4, 16, 1, 5, 0, TimeSpan.Zero));
             MomSlackMetadataSnapshotStore.Save(
                 Path.Combine(tempDirectory, MomDefaults.SlackMetadataFileName),
                 new DateTimeOffset(2026, 4, 16, 1, 0, 0, TimeSpan.Zero),
@@ -208,14 +210,15 @@ public sealed class MomApplicationTests
                     new StringReader(string.Empty),
                     output,
                     error,
-                    Directory.GetCurrentDirectory()));
+                    Directory.GetCurrentDirectory()),
+                timeProvider: timeProvider);
 
             var exitCode = await application.RunAsync(["stats", "--channel", "C123", tempDirectory]);
 
             Assert.Equal(0, exitCode);
             var rendered = output.ToString();
             Assert.Contains($"No runtime stats found in {Path.GetFullPath(tempDirectory)}", rendered);
-            Assert.Contains("Slack metadata: found=True refreshed_at=2026-04-16T01:00:00.0000000+00:00 users=1 channels=1", rendered);
+            Assert.Contains("Slack metadata: found=True refreshed_at=2026-04-16T01:00:00.0000000+00:00 age=00:05:00 status=fresh users=1 channels=1", rendered);
             Assert.Contains("Channel: general (C123)", rendered);
             Assert.Contains("Log: found=True messages=1 user=1 bot=0 attachments=1", rendered);
             Assert.Contains("Latest logged message: ts=12345.1000", rendered);
@@ -241,6 +244,7 @@ public sealed class MomApplicationTests
 
         try
         {
+            var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 4, 16, 1, 15, 0, TimeSpan.Zero));
             var stats = new MomRuntimeStats(Path.Combine(tempDirectory, MomDefaults.RuntimeStatsFileName));
             stats.RecordStartupBackfill(
                 new MomBackfillResult(2, 5),
@@ -261,7 +265,8 @@ public sealed class MomApplicationTests
                     new StringReader(string.Empty),
                     output,
                     error,
-                    Directory.GetCurrentDirectory()));
+                    Directory.GetCurrentDirectory()),
+                timeProvider: timeProvider);
 
             using var store = new MomChannelStore(tempDirectory);
             await store.LogMessageAsync(
@@ -290,6 +295,8 @@ public sealed class MomApplicationTests
             var slackMetadata = root.GetProperty("slackMetadata");
             Assert.True(slackMetadata.GetProperty("found").GetBoolean());
             Assert.Equal("2026-04-16T01:00:00+00:00", slackMetadata.GetProperty("refreshedAt").GetString());
+            Assert.Equal(900, slackMetadata.GetProperty("ageSeconds").GetInt32());
+            Assert.Equal("stale", slackMetadata.GetProperty("status").GetString());
             Assert.Equal(1, slackMetadata.GetProperty("userCount").GetInt32());
             Assert.Equal(1, slackMetadata.GetProperty("channelCount").GetInt32());
             var channel = root.GetProperty("channel");
@@ -336,7 +343,11 @@ public sealed class MomApplicationTests
             Assert.False(root.GetProperty("runtimeStatsFound").GetBoolean());
             Assert.Equal(JsonValueKind.Null, root.GetProperty("summary").ValueKind);
             Assert.Equal(JsonValueKind.Null, root.GetProperty("snapshot").ValueKind);
-            Assert.False(root.GetProperty("slackMetadata").GetProperty("found").GetBoolean());
+            var slackMetadata = root.GetProperty("slackMetadata");
+            Assert.False(slackMetadata.GetProperty("found").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, slackMetadata.GetProperty("refreshedAt").ValueKind);
+            Assert.Equal(JsonValueKind.Null, slackMetadata.GetProperty("ageSeconds").ValueKind);
+            Assert.Equal(JsonValueKind.Null, slackMetadata.GetProperty("status").ValueKind);
         }
         finally
         {
