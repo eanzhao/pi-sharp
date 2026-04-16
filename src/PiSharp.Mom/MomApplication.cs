@@ -307,6 +307,7 @@ Examples:
         }
 
         var statsPath = Path.Combine(workspaceDirectory, MomDefaults.RuntimeStatsFileName);
+        var slackMetadataPath = Path.Combine(workspaceDirectory, MomDefaults.SlackMetadataFileName);
         var runtimeStatsFound = File.Exists(statsPath);
         MomRuntimeStats? runtimeStats = runtimeStatsFound ? new MomRuntimeStats(statsPath) : null;
         var snapshot = runtimeStats?.Snapshot();
@@ -323,6 +324,7 @@ Examples:
                     {
                         schemaVersion = MomDefaults.StatsJsonSchemaVersion,
                         workspaceDirectory,
+                        paths = new WorkspacePathsJson(statsPath, slackMetadataPath),
                         runtimeStatsFound,
                         summary = runtimeStats?.FormatSummary(),
                         snapshot,
@@ -608,6 +610,12 @@ Examples:
             channelName,
             FormatChannelLabel(channelId, channelName),
             channelDirectory,
+            new ChannelPathsJson(
+                logPath,
+                attachmentsDirectory,
+                sessionDirectory,
+                scratchDirectory,
+                channelMemoryPath),
             Directory.Exists(channelDirectory),
             File.Exists(logPath),
             totalMessages,
@@ -711,6 +719,7 @@ Examples:
         string? ChannelName,
         string ChannelLabel,
         string ChannelDirectory,
+        ChannelPathsJson Paths,
         bool ChannelDirectoryExists,
         bool LogFound,
         int TotalMessages,
@@ -733,6 +742,17 @@ Examples:
         int UserCount,
         int ChannelCount,
         MomSlackWorkspaceIndex WorkspaceIndex);
+
+    private sealed record WorkspacePathsJson(
+        string RuntimeStatsPath,
+        string SlackMetadataPath);
+
+    private sealed record ChannelPathsJson(
+        string LogPath,
+        string AttachmentsDirectory,
+        string SessionDirectory,
+        string ScratchDirectory,
+        string ChannelMemoryPath);
 
     private sealed record WorkspaceMetadataJson(
         bool Found,

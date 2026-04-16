@@ -286,6 +286,13 @@ public sealed class MomApplicationTests
             var root = document.RootElement;
             Assert.Equal(MomDefaults.StatsJsonSchemaVersion, root.GetProperty("schemaVersion").GetInt32());
             Assert.Equal(Path.GetFullPath(tempDirectory), root.GetProperty("workspaceDirectory").GetString());
+            var paths = root.GetProperty("paths");
+            Assert.Equal(
+                Path.Combine(Path.GetFullPath(tempDirectory), MomDefaults.RuntimeStatsFileName),
+                paths.GetProperty("runtimeStatsPath").GetString());
+            Assert.Equal(
+                Path.Combine(Path.GetFullPath(tempDirectory), MomDefaults.SlackMetadataFileName),
+                paths.GetProperty("slackMetadataPath").GetString());
             Assert.True(root.GetProperty("runtimeStatsFound").GetBoolean());
             Assert.Contains("Runtime stats:", root.GetProperty("summary").GetString());
             var snapshot = root.GetProperty("snapshot");
@@ -304,6 +311,12 @@ public sealed class MomApplicationTests
             Assert.Equal("C123", channel.GetProperty("channelId").GetString());
             Assert.Equal("general", channel.GetProperty("channelName").GetString());
             Assert.Equal("general (C123)", channel.GetProperty("channelLabel").GetString());
+            var channelPaths = channel.GetProperty("paths");
+            Assert.Equal(Path.Combine(store.GetChannelDirectory("C123"), MomDefaults.LogFileName), channelPaths.GetProperty("logPath").GetString());
+            Assert.Equal(Path.Combine(store.GetChannelDirectory("C123"), "attachments"), channelPaths.GetProperty("attachmentsDirectory").GetString());
+            Assert.Equal(store.GetSessionDirectory("C123"), channelPaths.GetProperty("sessionDirectory").GetString());
+            Assert.Equal(Path.Combine(store.GetChannelDirectory("C123"), MomDefaults.ScratchDirectoryName), channelPaths.GetProperty("scratchDirectory").GetString());
+            Assert.Equal(Path.Combine(store.GetChannelDirectory("C123"), MomDefaults.MemoryFileName), channelPaths.GetProperty("channelMemoryPath").GetString());
             Assert.True(channel.GetProperty("logFound").GetBoolean());
             Assert.Equal(1, channel.GetProperty("totalMessages").GetInt32());
             Assert.Equal("U123", channel.GetProperty("latestUserId").GetString());
@@ -342,6 +355,13 @@ public sealed class MomApplicationTests
             var root = document.RootElement;
             Assert.Equal(MomDefaults.StatsJsonSchemaVersion, root.GetProperty("schemaVersion").GetInt32());
             Assert.Equal(Path.GetFullPath(tempDirectory), root.GetProperty("workspaceDirectory").GetString());
+            var paths = root.GetProperty("paths");
+            Assert.Equal(
+                Path.Combine(Path.GetFullPath(tempDirectory), MomDefaults.RuntimeStatsFileName),
+                paths.GetProperty("runtimeStatsPath").GetString());
+            Assert.Equal(
+                Path.Combine(Path.GetFullPath(tempDirectory), MomDefaults.SlackMetadataFileName),
+                paths.GetProperty("slackMetadataPath").GetString());
             Assert.False(root.GetProperty("runtimeStatsFound").GetBoolean());
             Assert.Equal(JsonValueKind.Null, root.GetProperty("summary").ValueKind);
             Assert.Equal(JsonValueKind.Null, root.GetProperty("snapshot").ValueKind);
