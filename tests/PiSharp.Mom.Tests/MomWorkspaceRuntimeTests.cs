@@ -407,6 +407,8 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Equal(1, snapshot.BootstrapBackfillCount);
         Assert.Equal(1, snapshot.BootstrapBackfillMessages);
         Assert.Equal(0, snapshot.BootstrapBackfillFailures);
+        Assert.Equal("C123", snapshot.LastBootstrapBackfillChannel);
+        Assert.NotNull(snapshot.LastBootstrapBackfillAt);
     }
 
     [Fact]
@@ -528,6 +530,8 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Equal(1, snapshot.ReconnectGapBackfillCount);
         Assert.Equal(1, snapshot.ReconnectGapBackfillMessages);
         Assert.Equal(0, snapshot.ReconnectGapBackfillFailures);
+        Assert.Equal("C123", snapshot.LastReconnectGapBackfillChannel);
+        Assert.NotNull(snapshot.LastReconnectGapBackfillAt);
     }
 
     private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>

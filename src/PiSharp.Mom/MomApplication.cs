@@ -181,7 +181,7 @@ Examples:
             ReportNoticeAsync,
             runtimeStats);
         var backfillResult = await backfiller.BackfillAllAsync(auth.UserId, cancellationToken).ConfigureAwait(false);
-        runtimeStats.RecordStartupBackfill(backfillResult);
+        runtimeStats.RecordStartupBackfill(backfillResult, DateTimeOffset.UtcNow);
         var socketModeClient = new SlackSocketModeClient(slackClient, slackAppToken);
         using var eventsWatcher = new MomEventsWatcher(workspaceDirectory, runtime.DispatchAsync);
         eventsWatcher.Start(cancellationToken);

@@ -162,6 +162,7 @@ public sealed class MomWorkspaceRuntime
         }
 
         var logPath = _store.GetLogFilePath(incomingEvent.ChannelId);
+        var channelDescription = DescribeChannel(incomingEvent.ChannelId);
         if (!File.Exists(logPath))
         {
             try
@@ -172,9 +173,12 @@ public sealed class MomWorkspaceRuntime
                         incomingEvent.Timestamp,
                         cancellationToken)
                     .ConfigureAwait(false);
-                _runtimeStats?.RecordBootstrapBackfill(messagesLogged);
+                _runtimeStats?.RecordBootstrapBackfill(
+                    channelDescription,
+                    messagesLogged,
+                    DateTimeOffset.UtcNow);
                 await ReportNoticeAsync(
-                        $"Bootstrap backfill for {DescribeChannel(incomingEvent.ChannelId)}: {messagesLogged} messages",
+                        $"Bootstrap backfill for {channelDescription}: {messagesLogged} messages",
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -182,7 +186,7 @@ public sealed class MomWorkspaceRuntime
             {
                 _runtimeStats?.RecordBootstrapBackfillFailure();
                 await ReportNoticeAsync(
-                        $"Bootstrap backfill failed for {DescribeChannel(incomingEvent.ChannelId)}: {exception.Message}",
+                        $"Bootstrap backfill failed for {channelDescription}: {exception.Message}",
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -220,9 +224,12 @@ public sealed class MomWorkspaceRuntime
                     incomingEvent.Timestamp,
                     cancellationToken)
                 .ConfigureAwait(false);
-            _runtimeStats?.RecordReconnectGapBackfill(messagesLogged);
+            _runtimeStats?.RecordReconnectGapBackfill(
+                channelDescription,
+                messagesLogged,
+                DateTimeOffset.UtcNow);
             await ReportNoticeAsync(
-                    $"Reconnect gap backfill for {DescribeChannel(incomingEvent.ChannelId)} after reconnect #{incomingEvent.ConnectionGeneration}: {messagesLogged} messages",
+                    $"Reconnect gap backfill for {channelDescription} after reconnect #{incomingEvent.ConnectionGeneration}: {messagesLogged} messages",
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -230,7 +237,7 @@ public sealed class MomWorkspaceRuntime
         {
             _runtimeStats?.RecordReconnectGapBackfillFailure();
             await ReportNoticeAsync(
-                    $"Reconnect gap backfill failed for {DescribeChannel(incomingEvent.ChannelId)} after reconnect #{incomingEvent.ConnectionGeneration}: {exception.Message}",
+                    $"Reconnect gap backfill failed for {channelDescription} after reconnect #{incomingEvent.ConnectionGeneration}: {exception.Message}",
                     cancellationToken)
                 .ConfigureAwait(false);
         }

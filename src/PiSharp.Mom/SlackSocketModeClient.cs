@@ -37,19 +37,23 @@ public sealed class SlackSocketModeClient
             var socketUrl = await _webApiClient.OpenSocketConnectionAsync(_appToken, cancellationToken).ConfigureAwait(false);
             await socket.ConnectAsync(new Uri(socketUrl), cancellationToken).ConfigureAwait(false);
 
-            if (connectionGeneration > 0 && reportNoticeAsync is not null)
+            if (connectionGeneration > 0)
             {
-                runtimeStats?.RecordReconnect();
-                try
+                runtimeStats?.RecordReconnect(connectionGeneration, DateTimeOffset.UtcNow);
+
+                if (reportNoticeAsync is not null)
                 {
-                    await reportNoticeAsync(
-                            $"Slack Socket Mode reconnected #{connectionGeneration}",
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Reconnect notices are best-effort and should not interfere with the socket loop.
+                    try
+                    {
+                        await reportNoticeAsync(
+                                $"Slack Socket Mode reconnected #{connectionGeneration}",
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Reconnect notices are best-effort and should not interfere with the socket loop.
+                    }
                 }
             }
 
