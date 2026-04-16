@@ -61,6 +61,13 @@ public sealed class MomChannelStore
         return sessionDirectory;
     }
 
+    public string GetEventsDirectory()
+    {
+        var path = Path.Combine(WorkspaceDirectory, MomDefaults.EventsDirectoryName);
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
     public string GetLogFilePath(string channelId) =>
         Path.Combine(GetChannelDirectory(channelId), MomDefaults.LogFileName);
 

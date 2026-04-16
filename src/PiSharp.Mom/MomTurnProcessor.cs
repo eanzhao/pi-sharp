@@ -59,7 +59,7 @@ public sealed class MomTurnProcessor
 
         var placeholderTs = await _slackClient.PostMessageAsync(
                 incomingEvent.ChannelId,
-                "_Thinking..._",
+                incomingEvent.StatusText ?? "_Thinking..._",
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
@@ -130,6 +130,16 @@ public sealed class MomTurnProcessor
                 .Where(static message => message.Role == ChatRole.Assistant)
                 .Select(static message => message.Text?.Trim())
                 .LastOrDefault(static text => !string.IsNullOrWhiteSpace(text));
+
+            if (string.Equals(assistantText, "[SILENT]", StringComparison.Ordinal))
+            {
+                await _slackClient.DeleteMessageAsync(
+                        incomingEvent.ChannelId,
+                        placeholderTs,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
 
             var responseText = string.IsNullOrWhiteSpace(assistantText)
                 ? "_Done._"

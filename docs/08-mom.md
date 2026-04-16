@@ -8,7 +8,8 @@ Phase 08 实现 `PiSharp.Mom` 的最小可用 Slack bot runtime，把 pi-mono `m
 2. 每个 channel/DM 一个独立 workspace 目录
 3. 每个 channel/DM 一个持久化 `SessionManager` 会话
 4. 直接复用 `PiSharp.CodingAgent` 的工具与 Agent runtime 回答 Slack 消息
-5. `PiSharp.Cli` 通过 `mom` 命名空间转发到 `PiSharp.Mom`
+5. `workspace/events/*.json` 触发 immediate / one-shot / periodic synthetic turn
+6. `PiSharp.Cli` 通过 `mom` 命名空间转发到 `PiSharp.Mom`
 
 这一阶段明确是“最小可跑”而不是一次性追平 TS 版全部能力。现在已经能跑真实 Slack bot 主链路，但刻意把附件下载、事件调度、Docker sandbox 和 thread 级工具详情留到后续。
 
@@ -30,6 +31,7 @@ Phase 08 实现 `PiSharp.Mom` 的最小可用 Slack bot runtime，把 pi-mono `m
 - `MomSystemPrompt`
 - `MomTurnProcessor`
 - `MomWorkspaceRuntime`
+- `MomEventsWatcher`
 - `PiSharp.Mom.Tests`
 - `PiSharp.Cli` 的 `mom` 命名空间转发
 
@@ -122,6 +124,25 @@ pi-mono `mom` 的重要特性是 Docker sandbox。C# 版这一步没有跟进 sa
 
 因此文档和实现都把这点当作显式 tradeoff，而不是隐藏行为。
 
+### 6. events watcher 走本地文件系统，而不是额外服务
+
+参考 TS 版 `events.ts`，C# 版补了 `MomEventsWatcher`：
+
+- 监听 `<workspace>/events/*.json`
+- `immediate`：发现后立即触发，成功入队后删除
+- `one-shot`：按 `at` 定时，触发后删除
+- `periodic`：用 `Cronos` 计算下次 occurrence，触发后继续调度
+
+触发时会生成 synthetic Slack turn：
+
+```text
+[EVENT:daily-inbox.json:periodic:0 9 * * 1-5] Check inbox
+```
+
+并通过 `MomWorkspaceRuntime` 的 per-channel queue 执行。和用户消息不同，事件在 channel 忙时不会直接回 “Already working”，而是最多排队 5 个，超过后丢弃。
+
+这一步的价值在于：phase 08 不需要先接额外 webhook server，就已经能支持 reminder、polling 和外部程序通过写文件唤醒 mom。
+
 ## 与 pi-mono 的对应关系
 
 | pi-mono | PiSharp.Mom |
@@ -129,6 +150,7 @@ pi-mono `mom` 的重要特性是 Docker sandbox。C# 版这一步没有跟进 sa
 | `main.ts` | `MomApplication` + `MomWorkspaceRuntime` |
 | `slack.ts` | `SlackWebApiClient` + `SlackSocketModeClient` |
 | `store.ts` | `MomChannelStore` |
+| `events.ts` | `MomEventsWatcher` |
 | `agent.ts` | `MomTurnProcessor` + `MomSystemPrompt` |
 | `pi agent` 复用路径 | `CodingAgentRuntimeBootstrap` + `CodingAgentSession` |
 
@@ -136,7 +158,6 @@ pi-mono `mom` 的重要特性是 Docker sandbox。C# 版这一步没有跟进 sa
 
 - 只处理 `app_mention` 和 DM，不记录普通 channel chatter
 - 还没有附件下载与 `attach` 工具
-- 还没有 `events/` watcher、cron/one-shot/immediate 事件系统
 - 还没有 Docker sandbox，工具运行在 host
 - 还没有 thread 级工具详情或 streaming UI，只保留单消息占位再覆盖
 - 没有单独实现 workspace settings / auth schema，先复用现有 `SettingsManager` / provider bootstrap
@@ -150,7 +171,8 @@ pi-mono `mom` 的重要特性是 Docker sandbox。C# 版这一步没有跟进 sa
 - `MomApplication` 的参数解析和 namespaced help
 - `SlackSocketModeClient` 对 mention / DM / bot-self event 的解析
 - `SlackMrkdwnFormatter` 的 Markdown → mrkdwn 基础转换
-- `MomTurnProcessor` 的 prompt 归一化、Slack 回复、`log.jsonl` 落盘、session 持久化
+- `MomTurnProcessor` 的 prompt 归一化、`[SILENT]`、Slack 回复、`log.jsonl` 落盘、session 持久化
+- `MomEventsWatcher` 的 immediate 触发和过期 one-shot 清理
 - `PiSharp.Cli` 到 `PiSharp.Mom` 的 `mom` 命名空间转发
 
 这个阶段的结果是：`PiSharp.Mom` 已经是一个真实可运行的 Socket Mode Slack bot，只是还没有把 TS 版 mom 的高阶能力全部搬过来。

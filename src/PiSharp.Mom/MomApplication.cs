@@ -159,6 +159,8 @@ Examples:
 
         var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient);
         var socketModeClient = new SlackSocketModeClient(slackClient, slackAppToken);
+        using var eventsWatcher = new MomEventsWatcher(workspaceDirectory, runtime.DispatchAsync);
+        eventsWatcher.Start(cancellationToken);
 
         await _environment.Output.WriteLineAsync($"Listening for Slack events in {workspaceDirectory}").ConfigureAwait(false);
         await socketModeClient.RunAsync(auth.UserId, runtime.DispatchAsync, cancellationToken).ConfigureAwait(false);

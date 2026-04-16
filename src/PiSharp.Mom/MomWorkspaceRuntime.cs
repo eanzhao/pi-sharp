@@ -47,6 +47,17 @@ public sealed class MomWorkspaceRuntime
         {
             if (state.ActiveTask is not null && !state.ActiveTask.IsCompleted)
             {
+                if (incomingEvent.QueueIfBusy)
+                {
+                    if (state.PendingEvents.Count >= MomDefaults.MaxQueuedEventsPerChannel)
+                    {
+                        return Task.CompletedTask;
+                    }
+
+                    state.PendingEvents.Enqueue(incomingEvent);
+                    return Task.CompletedTask;
+                }
+
                 return _slackClient.PostMessageAsync(
                     incomingEvent.ChannelId,
                     "_Already working. Send `stop` to cancel._",
@@ -88,11 +99,23 @@ public sealed class MomWorkspaceRuntime
         }
         finally
         {
+            SlackIncomingEvent? nextEvent = null;
+
             lock (state.SyncRoot)
             {
-                state.ActiveTask = null;
                 state.CancellationTokenSource?.Dispose();
                 state.CancellationTokenSource = null;
+
+                if (state.PendingEvents.Count > 0)
+                {
+                    nextEvent = state.PendingEvents.Dequeue();
+                    state.CancellationTokenSource = new CancellationTokenSource();
+                    state.ActiveTask = RunChannelTurnAsync(state, nextEvent);
+                }
+                else
+                {
+                    state.ActiveTask = null;
+                }
             }
         }
     }
@@ -104,5 +127,7 @@ public sealed class MomWorkspaceRuntime
         public CancellationTokenSource? CancellationTokenSource { get; set; }
 
         public Task? ActiveTask { get; set; }
+
+        public Queue<SlackIncomingEvent> PendingEvents { get; } = new();
     }
 }

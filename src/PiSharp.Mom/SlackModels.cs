@@ -6,7 +6,9 @@ public sealed record SlackIncomingEvent(
     string Text,
     string Timestamp,
     string EventType,
-    bool IsDirectMessage);
+    bool IsDirectMessage,
+    bool QueueIfBusy = false,
+    string? StatusText = null);
 
 public sealed record SlackAuthInfo(string UserId);
 

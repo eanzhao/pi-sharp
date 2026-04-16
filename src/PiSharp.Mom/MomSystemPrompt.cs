@@ -23,6 +23,10 @@ public static class MomSystemPrompt
         var workspaceDirectory = Normalize(options.WorkspaceDirectory);
         var channelDirectory = Normalize(options.ChannelDirectory);
         var scratchDirectory = Normalize(Path.Combine(options.ChannelDirectory, MomDefaults.ScratchDirectoryName));
+        var eventsDirectory = Normalize(Path.Combine(options.WorkspaceDirectory, MomDefaults.EventsDirectoryName));
+        var immediateExample = $"{{\"type\":\"immediate\",\"channelId\":\"{options.ChannelId}\",\"text\":\"New activity detected\"}}";
+        var oneShotExample = $"{{\"type\":\"one-shot\",\"channelId\":\"{options.ChannelId}\",\"text\":\"Remind me later\",\"at\":\"2026-04-16T18:00:00+08:00\"}}";
+        var periodicExample = $"{{\"type\":\"periodic\",\"channelId\":\"{options.ChannelId}\",\"text\":\"Check inbox\",\"schedule\":\"0 9 * * 1-5\",\"timezone\":\"Asia/Singapore\"}}";
 
         return
         $"""
@@ -50,6 +54,15 @@ Operational rules:
 - If a user only says "stop", treat that as an external stop request, not a task to execute.
 - Keep Slack replies short unless the task requires detail.
 - If you refer to paths, use paths relative to the channel directory when possible.
+
+Events:
+- Events live in {eventsDirectory}.
+- Immediate event example: {immediateExample}
+- One-shot event example: {oneShotExample}
+- Periodic event example: {periodicExample}
+- Immediate and one-shot events auto-delete after they trigger. Periodic events stay until deleted.
+- When a periodic event has nothing useful to report, respond with exactly [SILENT].
+- Manage events with ls/cat/rm inside the events directory.
 
 Current memory:
 {options.Memory}

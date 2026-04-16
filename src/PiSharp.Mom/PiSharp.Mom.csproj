@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Cronos" Version="0.11.1" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../PiSharp.CodingAgent/PiSharp.CodingAgent.csproj" />
   </ItemGroup>
 </Project>

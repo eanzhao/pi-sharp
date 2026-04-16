@@ -104,6 +104,54 @@ public sealed class MomTurnProcessorTests : IDisposable
         Assert.Empty(slackClient.Updates);
     }
 
+    [Fact]
+    public async Task ProcessAsync_DeletesStatusMessageForSilentResponses()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("[SILENT]"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        var processor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient);
+
+        await processor.ProcessAsync(new SlackIncomingEvent(
+            "C123",
+            "EVENT",
+            "[EVENT:daily.json:periodic:0 9 * * 1-5] Check inbox",
+            "12345.6789",
+            "event",
+            IsDirectMessage: false,
+            QueueIfBusy: true,
+            StatusText: "_Starting event: daily.json_"));
+
+        Assert.Single(slackClient.Posts);
+        Assert.Equal("_Starting event: daily.json_", slackClient.Posts[0].Text);
+        Assert.Empty(slackClient.Updates);
+        Assert.Single(slackClient.Deletes);
+    }
+
     private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>
         new(
         [
