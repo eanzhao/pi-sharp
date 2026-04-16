@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
 using PiSharp.Ai;
 using PiSharp.CodingAgent;
@@ -17,6 +18,7 @@ public sealed class CliApplicationTests : IDisposable
 
         Assert.Contains("mom stats [--json] [--channel <id|name>] <workspace-directory>", help);
         Assert.Contains("mom stats --channel general ./mom-data", help);
+        Assert.Contains("--otel-endpoint <url>", help);
     }
 
     [Fact]
@@ -182,6 +184,101 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Equal($"done{Environment.NewLine}", output.ToString());
         Assert.Contains("Repository rules.", fakeClient.Options[0].Instructions);
         Assert.Equal(4, fakeClient.Options[0].Tools!.Count);
+    }
+
+    [Fact]
+    public async Task RunAsync_LoadsImageFileArgumentsAsDataContent()
+    {
+        var repoDirectory = Path.Combine(_rootDirectory, "image-repo");
+        Directory.CreateDirectory(repoDirectory);
+        File.WriteAllText(Path.Combine(repoDirectory, "notes.txt"), "Release notes.");
+        File.WriteAllBytes(Path.Combine(repoDirectory, "diagram.png"), [0x89, 0x50, 0x4E, 0x47]);
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var fakeClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("done"), ChatFinishReason.Stop),
+            ]);
+
+        var environment = new CliEnvironment(
+            new StringReader(string.Empty),
+            output,
+            error,
+            repoDirectory,
+            isInputRedirected: false,
+            environmentVariables: new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "test-key",
+            });
+
+        var application = new CliApplication(environment, CreateProviderCatalog(fakeClient));
+
+        var exitCode = await application.RunAsync(["@notes.txt", "@diagram.png", "Describe", "this", "image"]);
+
+        Assert.Equal(0, exitCode);
+
+        var userMessage = Assert.Single(fakeClient.Requests[0].Where(message => message.Role == ChatRole.User));
+        Assert.Collection(
+            userMessage.Contents,
+            content =>
+            {
+                var text = Assert.IsType<TextContent>(content);
+                Assert.Contains("# File: notes.txt", text.Text);
+                Assert.Contains("Release notes.", text.Text);
+            },
+            content =>
+            {
+                var image = Assert.IsType<DataContent>(content);
+                Assert.Equal("image/png", image.MediaType);
+                Assert.Equal("diagram.png", image.Name);
+            },
+            content =>
+            {
+                var text = Assert.IsType<TextContent>(content);
+                Assert.Equal("Describe this image", text.Text);
+            });
+    }
+
+    [Fact]
+    public async Task RunAsync_CreatesOpenTelemetryActivitiesWithoutExporterEndpoint()
+    {
+        var repoDirectory = Path.Combine(_rootDirectory, "otel-repo");
+        Directory.CreateDirectory(repoDirectory);
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var fakeClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("done"), ChatFinishReason.Stop),
+            ]);
+
+        var environment = new CliEnvironment(
+            new StringReader(string.Empty),
+            output,
+            error,
+            repoDirectory,
+            isInputRedirected: false,
+            environmentVariables: new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "test-key",
+            });
+
+        var activities = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = static source => source.Name == "PiSharp.Cli.ChatClient",
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStarted = activities.Add,
+        };
+
+        ActivitySource.AddActivityListener(listener);
+
+        var application = new CliApplication(environment, CreateProviderCatalog(fakeClient));
+        var exitCode = await application.RunAsync(["hello"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.NotEmpty(activities);
     }
 
     [Fact]

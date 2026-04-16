@@ -2,6 +2,7 @@ using System.Reflection;
 using Microsoft.Extensions.AI;
 using PiSharp.Agent;
 using PiSharp.Ai;
+using PiSharp.Pods.Providers;
 using PiSharp.Tui;
 
 namespace PiSharp.Pods;
@@ -95,6 +96,7 @@ public sealed class PodsApplication
     private readonly PodService _podService;
     private readonly IPodAgentFactory _podAgentFactory;
     private readonly IPodShellLauncher _podShellLauncher;
+    private readonly GpuProviderRegistry _gpuProviderRegistry;
     private readonly string _appName;
     private readonly bool _namespaced;
 
@@ -103,6 +105,7 @@ public sealed class PodsApplication
         PodService? podService = null,
         IPodAgentFactory? podAgentFactory = null,
         IPodShellLauncher? podShellLauncher = null,
+        GpuProviderRegistry? gpuProviderRegistry = null,
         string appName = "pisharp-pods",
         bool namespaced = false)
     {
@@ -110,6 +113,7 @@ public sealed class PodsApplication
         _podService = podService ?? new PodService(getEnvironmentVariable: _environment.GetEnvironmentVariable);
         _podAgentFactory = podAgentFactory ?? new PodAgentFactory();
         _podShellLauncher = podShellLauncher ?? new ProcessPodShellLauncher();
+        _gpuProviderRegistry = gpuProviderRegistry ?? new GpuProviderRegistry();
         _appName = string.IsNullOrWhiteSpace(appName) ? "pisharp-pods" : appName.Trim();
         _namespaced = namespaced;
     }
@@ -167,7 +171,7 @@ public sealed class PodsApplication
 
 Usage:
   {podCommandRoot}
-  {podCommandRoot} setup <name> "<ssh>" [--mount <command>] [--models-path <path>] [--vllm release|nightly|gpt-oss]
+  {podCommandRoot} setup <name> "<ssh>" [--provider <name>] [--mount <command>] [--models-path <path>] [--vllm release|nightly|gpt-oss]
   {podCommandRoot} active <name>
   {podCommandRoot} remove <name>
   {rootCommand} start <model> --name <name> [--memory <percent>] [--context <size>] [--gpus <count>] [--pod <name>] [--detach] [--vllm <args...>]
@@ -181,6 +185,7 @@ Usage:
 
 Examples:
   {podCommandRoot} setup dc1 "ssh root@1.2.3.4" --models-path /workspace
+  {podCommandRoot} setup runpod1 "ssh root@1.2.3.4" --provider runpod
   {rootCommand} start Qwen/Qwen2.5-Coder-32B-Instruct --name qwen --detach
   {rootCommand} list
   {rootCommand} doctor
@@ -188,6 +193,9 @@ Examples:
   {rootCommand} logs qwen --tail 200 --no-follow
   {rootCommand} ssh "nvidia-smi" --tty
   {rootCommand} shell dc1
+
+Providers:
+  datacrunch, runpod, vastai
 """;
     }
 
@@ -212,11 +220,12 @@ Examples:
     {
         if (args.Count < 2)
         {
-            throw new InvalidOperationException("Usage: pods setup <name> \"<ssh>\" [--mount <command>] [--models-path <path>] [--vllm release|nightly|gpt-oss]");
+            throw new InvalidOperationException("Usage: pods setup <name> \"<ssh>\" [--provider <name>] [--mount <command>] [--models-path <path>] [--vllm release|nightly|gpt-oss]");
         }
 
         var name = args[0];
         var sshCommand = args[1];
+        string? providerName = null;
         string? mountCommand = null;
         string? modelsPath = null;
         var vllmVersion = PodsDefaults.VllmRelease;
@@ -225,6 +234,9 @@ Examples:
         {
             switch (args[index])
             {
+                case "--provider":
+                    providerName = ReadRequiredValue(args, ref index, "--provider");
+                    break;
                 case "--mount":
                     mountCommand = ReadRequiredValue(args, ref index, "--mount");
                     break;
@@ -237,6 +249,18 @@ Examples:
                 default:
                     throw new InvalidOperationException($"Unknown option '{args[index]}'.");
             }
+        }
+
+        IGpuProvider? provider = null;
+        if (!string.IsNullOrWhiteSpace(providerName))
+        {
+            provider = _gpuProviderRegistry.GetRequired(providerName);
+            mountCommand ??= provider.DefaultMountCommand;
+            modelsPath ??= provider.DefaultModelsPath;
+
+            await _environment.Output.WriteLineAsync($"Using provider defaults for '{provider.Name}'.").ConfigureAwait(false);
+            await _environment.Output.WriteLineAsync($"Volume: {provider.RecommendedVolumeConfig}").ConfigureAwait(false);
+            await _environment.Output.WriteLineAsync(provider.SetupInstructions).ConfigureAwait(false);
         }
 
         var result = await _podService.SetupPodAsync(

@@ -1,0 +1,56 @@
+.ps-artifact-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    border: 1px solid rgba(16, 38, 45, 0.14);
+    border-radius: 1rem;
+    background: rgba(247, 244, 238, 0.92);
+    overflow: hidden;
+}
+
+.ps-artifact-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.95rem 1rem 0;
+}
+
+.ps-artifact-kicker {
+    margin: 0 0 0.15rem;
+    color: #66767b;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.ps-artifact-header h4 {
+    margin: 0;
+    font-size: 1rem;
+    color: #1d3940;
+}
+
+.ps-artifact-meta {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.ps-artifact-meta span {
+    padding: 0.32rem 0.55rem;
+    border-radius: 999px;
+    background: rgba(16, 38, 45, 0.08);
+    color: #41585f;
+    font-size: 0.74rem;
+    font-weight: 700;
+    text-transform: lowercase;
+}
+
+.ps-artifact-frame {
+    width: 100%;
+    min-height: 22rem;
+    border: 0;
+    background: #fff;
+}

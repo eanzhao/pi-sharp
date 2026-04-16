@@ -118,6 +118,35 @@ public static class WebUiFormatting
         }
     }
 
+    public static IReadOnlyList<ArtifactVersion> GetArtifacts(ChatMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        var artifacts = new List<ArtifactVersion>();
+
+        if (AgentMessageMetadata.TryGetToolResult(message, out var toolResult))
+        {
+            artifacts.AddRange(ExtractArtifacts(toolResult.Value));
+            artifacts.AddRange(ExtractArtifacts(toolResult.Details));
+            foreach (var content in toolResult.Content)
+            {
+                artifacts.AddRange(ExtractArtifacts(content));
+            }
+        }
+
+        foreach (var content in message.Contents)
+        {
+            artifacts.AddRange(ExtractArtifacts(content));
+        }
+
+        return artifacts
+            .GroupBy(
+                static artifact => $"{artifact.ArtifactId}:{artifact.VersionNumber}:{artifact.NormalizedContentType}",
+                StringComparer.Ordinal)
+            .Select(static group => group.Last())
+            .ToArray();
+    }
+
     public static string GetToolResultBody(ChatMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -133,11 +162,21 @@ public static class WebUiFormatting
                 return renderedContent;
             }
 
+            if (GetArtifacts(message).Count > 0)
+            {
+                return string.Empty;
+            }
+
             return SerializeValue(toolResult.Value);
         }
 
         if (message.Contents.OfType<FunctionResultContent>().FirstOrDefault() is { } result)
         {
+            if (GetArtifacts(message).Count > 0)
+            {
+                return string.Empty;
+            }
+
             return SerializeValue(result.Result);
         }
 
@@ -151,4 +190,192 @@ public static class WebUiFormatting
             TextReasoningContent reasoning => reasoning.Text,
             _ => SerializeValue(content)
         };
+
+    private static IReadOnlyList<ArtifactVersion> ExtractArtifacts(AIContent content) =>
+        content switch
+        {
+            FunctionResultContent result => ExtractArtifacts(result.Result),
+            TextContent text => ExtractArtifacts(text.Text),
+            _ => Array.Empty<ArtifactVersion>(),
+        };
+
+    private static IReadOnlyList<ArtifactVersion> ExtractArtifacts(object? value)
+    {
+        switch (value)
+        {
+            case null:
+                return Array.Empty<ArtifactVersion>();
+
+            case ArtifactVersion artifact:
+                return [artifact with { ContentType = artifact.NormalizedContentType }];
+
+            case IEnumerable<ArtifactVersion> artifacts:
+                return artifacts.Select(static artifact => artifact with { ContentType = artifact.NormalizedContentType }).ToArray();
+
+            case JsonElement jsonElement:
+                return ExtractArtifacts(jsonElement);
+
+            case string text:
+                return ExtractArtifactsFromString(text);
+
+            case IEnumerable<object?> items:
+                return items.SelectMany(ExtractArtifacts).ToArray();
+
+            default:
+                try
+                {
+                    return ExtractArtifacts(JsonSerializer.SerializeToElement(value));
+                }
+                catch (Exception) when (value is not string)
+                {
+                    return Array.Empty<ArtifactVersion>();
+                }
+        }
+    }
+
+    private static IReadOnlyList<ArtifactVersion> ExtractArtifactsFromString(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return Array.Empty<ArtifactVersion>();
+        }
+
+        var trimmed = text.Trim();
+        if ((trimmed.StartsWith('{') && trimmed.EndsWith('}')) || (trimmed.StartsWith('[') && trimmed.EndsWith(']')))
+        {
+            try
+            {
+                return ExtractArtifacts(JsonSerializer.Deserialize<JsonElement>(trimmed));
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        if (trimmed.StartsWith("<svg", StringComparison.OrdinalIgnoreCase))
+        {
+            return [new ArtifactVersion("artifact", 1, "svg", text)];
+        }
+
+        if (trimmed.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("<html", StringComparison.OrdinalIgnoreCase))
+        {
+            return [new ArtifactVersion("artifact", 1, "html", text)];
+        }
+
+        return Array.Empty<ArtifactVersion>();
+    }
+
+    private static IReadOnlyList<ArtifactVersion> ExtractArtifacts(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            return element.EnumerateArray().SelectMany(ExtractArtifacts).ToArray();
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return Array.Empty<ArtifactVersion>();
+        }
+
+        var nestedArtifacts = new List<ArtifactVersion>();
+        if (TryGetProperty(element, "artifacts", out var artifactsProperty))
+        {
+            nestedArtifacts.AddRange(ExtractArtifacts(artifactsProperty));
+        }
+
+        if (TryGetProperty(element, "artifact", out var artifactProperty))
+        {
+            nestedArtifacts.AddRange(ExtractArtifacts(artifactProperty));
+        }
+
+        if (TryCreateArtifact(element, out var artifact))
+        {
+            nestedArtifacts.Add(artifact);
+        }
+
+        return nestedArtifacts;
+    }
+
+    private static bool TryCreateArtifact(JsonElement element, out ArtifactVersion artifact)
+    {
+        artifact = default!;
+
+        if (!TryReadStringProperty(element, ["artifactId", "id", "filename", "name"], out var artifactId) ||
+            !TryReadIntegerProperty(element, ["versionNumber", "version"], out var versionNumber) ||
+            !TryReadStringProperty(element, ["contentType", "type", "mimeType"], out var contentType) ||
+            !TryReadStringProperty(element, ["content", "value", "text"], out var content))
+        {
+            return false;
+        }
+
+        var normalizedContentType = ArtifactVersion.NormalizeContentType(contentType);
+        if (normalizedContentType is null)
+        {
+            return false;
+        }
+
+        artifact = new ArtifactVersion(artifactId, versionNumber, normalizedContentType, content);
+        return true;
+    }
+
+    private static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement value)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static bool TryReadStringProperty(JsonElement element, IReadOnlyList<string> propertyNames, out string value)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!TryGetProperty(element, propertyName, out var propertyValue))
+            {
+                continue;
+            }
+
+            if (propertyValue.ValueKind == JsonValueKind.String)
+            {
+                value = propertyValue.GetString() ?? string.Empty;
+                return !string.IsNullOrWhiteSpace(value);
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static bool TryReadIntegerProperty(JsonElement element, IReadOnlyList<string> propertyNames, out int value)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!TryGetProperty(element, propertyName, out var propertyValue))
+            {
+                continue;
+            }
+
+            if (propertyValue.ValueKind == JsonValueKind.Number && propertyValue.TryGetInt32(out value))
+            {
+                return true;
+            }
+
+            if (propertyValue.ValueKind == JsonValueKind.String &&
+                int.TryParse(propertyValue.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+            {
+                return true;
+            }
+        }
+
+        value = 0;
+        return false;
+    }
 }

@@ -7,7 +7,14 @@
         <span class="ps-tool-result-status">@(IsError ? "error" : "completed")</span>
     </header>
 
-    @if (string.IsNullOrWhiteSpace(Body))
+    @if (Artifacts.Count > 0)
+    {
+        foreach (var artifact in Artifacts)
+        {
+            <ArtifactPanel Artifact="artifact" />
+        }
+    }
+    else if (string.IsNullOrWhiteSpace(Body))
     {
         <div class="ps-tool-result-empty">(no output)</div>
     }
@@ -33,6 +40,8 @@
     private bool IsError => AgentMessageMetadata.IsToolError(Message);
 
     private string Body => WebUiFormatting.GetToolResultBody(Message);
+
+    private IReadOnlyList<ArtifactVersion> Artifacts => WebUiFormatting.GetArtifacts(Message);
 
     private bool UseCodeBlock =>
         Body.Contains('\n', StringComparison.Ordinal) ||

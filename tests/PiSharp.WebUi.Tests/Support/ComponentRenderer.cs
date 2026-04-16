@@ -7,12 +7,17 @@ namespace PiSharp.WebUi.Tests.Support;
 
 internal static class ComponentRenderer
 {
-    public static async Task<string> RenderAsync<TComponent>(IDictionary<string, object?>? parameters = null)
+    public static async Task<string> RenderAsync<TComponent>(
+        IDictionary<string, object?>? parameters = null,
+        Action<IServiceCollection>? configureServices = null)
         where TComponent : IComponent
     {
-        using var services = new ServiceCollection()
-            .AddLogging()
-            .BuildServiceProvider();
+        var serviceCollection = new ServiceCollection()
+            .AddLogging();
+
+        configureServices?.Invoke(serviceCollection);
+
+        using var services = serviceCollection.BuildServiceProvider();
 
         await using var renderer = new HtmlRenderer(services, services.GetRequiredService<ILoggerFactory>());
 

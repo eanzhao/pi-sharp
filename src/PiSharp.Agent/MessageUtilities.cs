@@ -105,6 +105,10 @@ internal static class MessageUtilities
         {
             TextContent text => new TextContent(text.Text),
             TextReasoningContent reasoning => new TextReasoningContent(reasoning.Text),
+            DataContent data => new DataContent(data.Uri, data.MediaType)
+            {
+                Name = data.Name,
+            },
             FunctionCallContent toolCall => new FunctionCallContent(
                 toolCall.CallId,
                 toolCall.Name,

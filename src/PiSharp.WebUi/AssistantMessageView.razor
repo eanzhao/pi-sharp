@@ -26,6 +26,13 @@
                                   Pending="PendingToolCalls.Contains(toolCall.CallId)"
                                   IsStreaming="IsStreaming" />
                     break;
+
+                case FunctionResultContent toolResult:
+                    foreach (var artifact in WebUiFormatting.GetArtifacts(new ChatMessage(Message.Role, [toolResult])))
+                    {
+                        <ArtifactPanel Artifact="artifact" />
+                    }
+                    break;
             }
         }
     </div>

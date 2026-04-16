@@ -1,0 +1,169 @@
+@inject IJSRuntime JS
+
+<section class="ps-provider-settings">
+    <header class="ps-provider-header">
+        <div>
+            <p class="ps-provider-kicker">custom providers</p>
+            <h3>OpenAI-compatible endpoints</h3>
+        </div>
+        <span class="ps-provider-count">@_configs.Count configured</span>
+    </header>
+
+    <form class="ps-provider-form" @onsubmit="SaveAsync" @onsubmit:preventDefault="true">
+        <label>
+            <span>Display name</span>
+            <input @bind="_displayName" @bind:event="oninput" placeholder="LM Studio" />
+        </label>
+
+        <label>
+            <span>Endpoint URL</span>
+            <input @bind="_endpointUrl" @bind:event="oninput" placeholder="http://localhost:1234/v1" />
+        </label>
+
+        <label>
+            <span>API key</span>
+            <input @bind="_apiKey" @bind:event="oninput" placeholder="lm-studio" />
+        </label>
+
+        <label>
+            <span>Model ID</span>
+            <input @bind="_modelId" @bind:event="oninput" placeholder="qwen2.5-coder:latest" />
+        </label>
+
+        <div class="ps-provider-actions">
+            <button type="submit" disabled="@(!CanSave)">Save provider</button>
+        </div>
+    </form>
+
+    @if (!string.IsNullOrWhiteSpace(_errorMessage))
+    {
+        <div class="ps-provider-error">@_errorMessage</div>
+    }
+
+    @if (_configs.Count == 0)
+    {
+        <p class="ps-provider-empty">No custom providers saved yet.</p>
+    }
+    else
+    {
+        <div class="ps-provider-list">
+            @foreach (var config in _configs)
+            {
+                <article class="ps-provider-card">
+                    <div>
+                        <h4>@config.DisplayName</h4>
+                        <p>@config.EndpointUrl</p>
+                        <p><code>@config.ModelId</code></p>
+                    </div>
+                    <button type="button" @onclick="() => DeleteAsync(config.DisplayName)">Delete</button>
+                </article>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    private const string StorageKey = "pi-sharp.webui.custom-providers";
+
+    private readonly List<CustomProviderConfig> _configs = [];
+    private string _displayName = string.Empty;
+    private string _endpointUrl = string.Empty;
+    private string _apiKey = string.Empty;
+    private string _modelId = string.Empty;
+    private string? _errorMessage;
+
+    [Parameter]
+    public EventCallback<IReadOnlyList<CustomProviderConfig>> ConfigurationsChanged { get; set; }
+
+    internal IReadOnlyList<CustomProviderConfig> Configurations => _configs;
+
+    private bool CanSave =>
+        !string.IsNullOrWhiteSpace(_displayName) &&
+        !string.IsNullOrWhiteSpace(_endpointUrl) &&
+        !string.IsNullOrWhiteSpace(_apiKey) &&
+        !string.IsNullOrWhiteSpace(_modelId);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync().ConfigureAwait(false);
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", StorageKey).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+
+            var configs = JsonSerializer.Deserialize<List<CustomProviderConfig>>(json) ?? [];
+            _configs.Clear();
+            _configs.AddRange(configs.OrderBy(static config => config.DisplayName, StringComparer.OrdinalIgnoreCase));
+        }
+        catch (Exception exception)
+        {
+            _errorMessage = exception.Message;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _errorMessage = null;
+
+        try
+        {
+            var config = new CustomProviderConfig(
+                _endpointUrl.Trim(),
+                _apiKey.Trim(),
+                _modelId.Trim(),
+                _displayName.Trim());
+
+            _ = config.GetEndpointUri();
+
+            var existingIndex = _configs.FindIndex(existing =>
+                string.Equals(existing.DisplayName, config.DisplayName, StringComparison.OrdinalIgnoreCase));
+
+            if (existingIndex >= 0)
+            {
+                _configs[existingIndex] = config;
+            }
+            else
+            {
+                _configs.Add(config);
+            }
+
+            _configs.Sort(static (left, right) => string.Compare(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase));
+
+            await PersistAsync().ConfigureAwait(false);
+            await ConfigurationsChanged.InvokeAsync(_configs.ToArray()).ConfigureAwait(false);
+
+            _displayName = string.Empty;
+            _endpointUrl = string.Empty;
+            _apiKey = string.Empty;
+            _modelId = string.Empty;
+        }
+        catch (Exception exception)
+        {
+            _errorMessage = exception.Message;
+        }
+    }
+
+    private async Task DeleteAsync(string displayName)
+    {
+        var removedCount = _configs.RemoveAll(config =>
+            string.Equals(config.DisplayName, displayName, StringComparison.OrdinalIgnoreCase));
+
+        if (removedCount == 0)
+        {
+            return;
+        }
+
+        await PersistAsync().ConfigureAwait(false);
+        await ConfigurationsChanged.InvokeAsync(_configs.ToArray()).ConfigureAwait(false);
+    }
+
+    private Task PersistAsync() =>
+        JS.InvokeVoidAsync("localStorage.setItem", StorageKey, JsonSerializer.Serialize(_configs)).AsTask();
+}

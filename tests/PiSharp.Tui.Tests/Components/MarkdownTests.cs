@@ -17,13 +17,14 @@ public sealed class MarkdownTests
             ```
             """);
 
-        var lines = markdown.Render(new RenderContext(24));
+        var lines = markdown.Render(new RenderContext(40));
 
         var rendered = string.Join(Environment.NewLine, lines);
+        var stripped = AnsiString.Strip(rendered);
 
-        Assert.Contains("Title", lines[0]);
-        Assert.Contains("- item one", rendered);
-        Assert.Contains("```csharp", rendered);
-        Assert.Contains("    Console.WriteLine", rendered);
+        Assert.Contains("Title", stripped);
+        Assert.Contains("item one", stripped);
+        Assert.Contains("item two", stripped);
+        Assert.Contains("Console.WriteLine", stripped);
     }
 }

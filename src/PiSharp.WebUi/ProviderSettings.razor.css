@@ -1,0 +1,120 @@
+.ps-provider-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1.2rem;
+    border: 1px solid rgba(16, 38, 45, 0.14);
+    border-radius: 1.15rem;
+    background:
+        radial-gradient(circle at top right, rgba(222, 171, 93, 0.12), transparent 32%),
+        rgba(255, 255, 255, 0.78);
+}
+
+.ps-provider-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.ps-provider-kicker {
+    margin: 0 0 0.15rem;
+    color: #5e6d72;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.ps-provider-header h3,
+.ps-provider-card h4 {
+    margin: 0;
+}
+
+.ps-provider-count {
+    padding: 0.35rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(16, 38, 45, 0.08);
+    color: #41585f;
+    font-size: 0.76rem;
+    font-weight: 700;
+}
+
+.ps-provider-form {
+    display: grid;
+    gap: 0.85rem;
+}
+
+.ps-provider-form label {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.ps-provider-form span {
+    color: #41585f;
+    font-size: 0.84rem;
+    font-weight: 700;
+}
+
+.ps-provider-form input {
+    width: 100%;
+    padding: 0.72rem 0.8rem;
+    border: 1px solid rgba(16, 38, 45, 0.16);
+    border-radius: 0.8rem;
+    background: rgba(255, 255, 255, 0.92);
+    color: #213c43;
+}
+
+.ps-provider-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.ps-provider-actions button,
+.ps-provider-card button {
+    padding: 0.7rem 0.95rem;
+    border: 0;
+    border-radius: 0.8rem;
+    background: #183b43;
+    color: #fff8ef;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.ps-provider-actions button:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.ps-provider-list {
+    display: grid;
+    gap: 0.8rem;
+}
+
+.ps-provider-card {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid rgba(16, 38, 45, 0.12);
+    border-radius: 0.95rem;
+    background: rgba(247, 244, 238, 0.8);
+}
+
+.ps-provider-card p {
+    margin: 0.25rem 0 0;
+    color: #4a6168;
+}
+
+.ps-provider-empty {
+    margin: 0;
+    color: #5e6d72;
+}
+
+.ps-provider-error {
+    padding: 0.85rem 0.95rem;
+    border-radius: 0.9rem;
+    background: rgba(191, 92, 54, 0.12);
+    color: #7b2b13;
+}

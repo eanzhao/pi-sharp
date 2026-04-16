@@ -1,4 +1,5 @@
 using PiSharp.Ai;
+using PiSharp.Agent;
 
 namespace PiSharp.WebUi.Tests;
 
@@ -17,5 +18,39 @@ public sealed class WebUiFormattingTests
         var formatted = PiSharp.WebUi.WebUiFormatting.FormatUsage(usage);
 
         Assert.Equal("↑1.2k ↓240 $0.0030", formatted);
+    }
+
+    [Fact]
+    public void GetArtifacts_ReadsArtifactPayloadsFromToolResults()
+    {
+        var toolCall = new Microsoft.Extensions.AI.FunctionCallContent(
+            "call-1",
+            "artifacts",
+            new Dictionary<string, object?>());
+
+        var message = AgentMessageMetadata.CreateToolResultMessage(
+            toolCall,
+            AgentToolResult.FromValue(
+                new
+                {
+                    artifacts = new[]
+                    {
+                        new
+                        {
+                            id = "demo.html",
+                            version = 3,
+                            contentType = "html",
+                            content = "<h1>Hello</h1>",
+                        },
+                    },
+                }),
+            isError: false);
+
+        var artifacts = PiSharp.WebUi.WebUiFormatting.GetArtifacts(message);
+
+        var artifact = Assert.Single(artifacts);
+        Assert.Equal("demo.html", artifact.ArtifactId);
+        Assert.Equal(3, artifact.VersionNumber);
+        Assert.Equal("html", artifact.ContentType);
     }
 }

@@ -1,8 +1,11 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using OpenTelemetry;
+using OpenTelemetry.Exporter;
+using OpenTelemetry.Trace;
 using PiSharp.Agent;
 using PiSharp.Ai;
 using PiSharp.CodingAgent;
@@ -98,6 +101,8 @@ public sealed class CliEnvironment
 
 public sealed class CliApplication
 {
+    private const string OpenTelemetryChatSourceName = "PiSharp.Cli.ChatClient";
+
     private static readonly string[] PodEnvironmentVariables =
     [
         PodsDefaults.PiApiKeyEnvironmentVariable,
@@ -215,7 +220,7 @@ public sealed class CliApplication
                 _environment.GetEnvironmentVariable);
 
             var interactive = ShouldRunInteractive(parsed, initialPrompt);
-            if (!interactive && string.IsNullOrWhiteSpace(initialPrompt))
+            if (!interactive && initialPrompt is null)
             {
                 await _environment.Error.WriteLineAsync("No input provided. Pass a message argument, @file, or pipe stdin.").ConfigureAwait(false);
                 return 1;
@@ -225,7 +230,7 @@ public sealed class CliApplication
             var activeToolNames = ResolveActiveToolNames(parsed, persistedSource?.Context?.ToolNames);
 
             var rawClient = runConfiguration.ProviderFactory.Create(runConfiguration.Model.Id, runConfiguration.ApiKey);
-            var chatClient = parsed.Verbose ? WrapWithMiddleware(rawClient, verbose: true) : rawClient;
+            var chatClient = WrapWithMiddleware(rawClient, parsed.Verbose, parsed.OtelEndpoint);
 
             using var session = await CodingAgentSession.CreateAsync(
                     chatClient,
@@ -282,7 +287,7 @@ public sealed class CliApplication
     private async Task<int> RunJsonModeAsync(
         CodingAgentSession session,
         SessionManager? persistenceManager,
-        string prompt,
+        ChatMessage prompt,
         CancellationToken cancellationToken)
     {
         var persistedMessageCount = session.State.Messages.Count;
@@ -319,7 +324,7 @@ public sealed class CliApplication
     private async Task<int> RunPrintModeAsync(
         CodingAgentSession session,
         SessionManager? persistenceManager,
-        string prompt,
+        ChatMessage prompt,
         bool verbose,
         CancellationToken cancellationToken)
     {
@@ -637,30 +642,36 @@ public sealed class CliApplication
         }
     }
 
-    private async Task<string> BuildInitialPromptAsync(CliArguments parsed, string workingDirectory)
+    private async Task<ChatMessage?> BuildInitialPromptAsync(CliArguments parsed, string workingDirectory)
     {
-        var parts = new List<string>();
+        var contents = new List<AIContent>();
 
         if (_environment.IsInputRedirected)
         {
             var stdin = await _environment.Input.ReadToEndAsync().ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(stdin))
             {
-                parts.Add(stdin.Trim());
+                AppendTextContent(contents, stdin.Trim());
             }
         }
 
         if (parsed.FileArguments.Count > 0)
         {
-            parts.Add(CodingAgentContextLoader.LoadFileArgumentText(parsed.FileArguments, workingDirectory));
+            AppendContents(
+                contents,
+                await CodingAgentContextLoader
+                    .LoadFileArgumentContentsAsync(parsed.FileArguments, workingDirectory)
+                    .ConfigureAwait(false));
         }
 
         if (parsed.Messages.Count > 0)
         {
-            parts.Add(string.Join(' ', parsed.Messages));
+            AppendTextContent(contents, string.Join(' ', parsed.Messages));
         }
 
-        return string.Join("\n\n", parts.Where(static part => !string.IsNullOrWhiteSpace(part)));
+        return contents.Count == 0
+            ? null
+            : new ChatMessage(ChatRole.User, contents);
     }
 
     private string? BuildAppendSystemPrompt(IEnumerable<string> promptInputs, string workingDirectory)
@@ -675,10 +686,10 @@ public sealed class CliApplication
             : string.Join("\n\n", resolvedInputs);
     }
 
-    private bool ShouldRunInteractive(CliArguments parsed, string? initialPrompt) =>
+    private bool ShouldRunInteractive(CliArguments parsed, ChatMessage? initialPrompt) =>
         _environment.IsInteractiveTerminal &&
         !parsed.Print &&
-        string.IsNullOrWhiteSpace(initialPrompt);
+        initialPrompt is null;
 
     private static IReadOnlyList<string> ResolveActiveToolNames(CliArguments parsed, IReadOnlyList<string>? sessionToolNames)
     {
@@ -750,10 +761,9 @@ public sealed class CliApplication
         return value.ToString();
     }
 
-    private static IChatClient WrapWithMiddleware(IChatClient inner, bool verbose)
+    private static IChatClient WrapWithMiddleware(IChatClient inner, bool verbose, Uri? otelEndpoint)
     {
-        var services = new ServiceCollection();
-        services.AddLogging(builder =>
+        var loggerFactory = LoggerFactory.Create(builder =>
         {
             builder.SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Warning);
             builder.AddSimpleConsole(options =>
@@ -763,12 +773,83 @@ public sealed class CliApplication
             });
         });
 
-        var serviceProvider = services.BuildServiceProvider();
-        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
+        var telemetryResources = new List<IDisposable>
+        {
+            loggerFactory,
+        };
 
-        return new ChatClientBuilder(inner)
+        if (otelEndpoint is not null)
+        {
+            telemetryResources.Add(
+                Sdk.CreateTracerProviderBuilder()
+                    .AddSource(OpenTelemetryChatSourceName)
+                    .AddOtlpExporter(options =>
+                    {
+                        options.Endpoint = BuildOtlpTraceEndpoint(otelEndpoint);
+                        options.Protocol = OtlpExportProtocol.HttpProtobuf;
+                    })
+                    .Build());
+        }
+
+        var chatClient = new ChatClientBuilder(inner)
             .UseLogging(loggerFactory)
+            .UseOpenTelemetry(loggerFactory, OpenTelemetryChatSourceName)
             .Build();
+
+        return new DisposableChatClient(chatClient, telemetryResources);
+    }
+
+    private static Uri BuildOtlpTraceEndpoint(Uri endpoint)
+    {
+        if (!string.Equals(endpoint.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            return endpoint;
+        }
+
+        if (endpoint.AbsolutePath.EndsWith("/v1/traces", StringComparison.OrdinalIgnoreCase))
+        {
+            return endpoint;
+        }
+
+        var builder = new UriBuilder(endpoint);
+        builder.Path = string.IsNullOrWhiteSpace(builder.Path) || builder.Path == "/"
+            ? "/v1/traces"
+            : $"{builder.Path.TrimEnd('/')}/v1/traces";
+
+        return builder.Uri;
+    }
+
+    private static void AppendContents(IList<AIContent> target, IEnumerable<AIContent> source)
+    {
+        foreach (var content in source)
+        {
+            switch (content)
+            {
+                case TextContent text:
+                    AppendTextContent(target, text.Text);
+                    break;
+                default:
+                    target.Add(content);
+                    break;
+            }
+        }
+    }
+
+    private static void AppendTextContent(IList<AIContent> contents, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        if (contents.Count > 0 && contents[^1] is TextContent existing)
+        {
+            contents[^1] = new TextContent($"{existing.Text}\n\n{text}");
+            return;
+        }
+
+        contents.Add(new TextContent(text));
     }
 
     private static readonly JsonSerializerOptions JsonOutputOptions = new()
@@ -795,6 +876,57 @@ public sealed class CliApplication
     }
 
     private sealed record PersistedSessionSource(SessionManager Manager, SessionContext Context);
+
+    private sealed class DisposableChatClient(
+        IChatClient inner,
+        IReadOnlyList<IDisposable> resources) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            inner.GetResponseAsync(messages, options, cancellationToken);
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            inner.GetStreamingResponseAsync(messages, options, cancellationToken);
+
+        public object? GetService(Type serviceType, object? serviceKey = null) =>
+            inner.GetService(serviceType, serviceKey);
+
+        public void Dispose()
+        {
+            Exception? disposeException = null;
+
+            try
+            {
+                inner.Dispose();
+            }
+            catch (Exception exception)
+            {
+                disposeException = exception;
+            }
+
+            foreach (var resource in resources.Reverse())
+            {
+                try
+                {
+                    resource.Dispose();
+                }
+                catch (Exception exception) when (disposeException is null)
+                {
+                    disposeException = exception;
+                }
+            }
+
+            if (disposeException is not null)
+            {
+                throw disposeException;
+            }
+        }
+    }
 
     private sealed class StreamingConsoleReporter(TextWriter output, TextWriter error, bool verbose)
     {

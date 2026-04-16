@@ -79,6 +79,17 @@ public sealed class SettingsManagerTests : IDisposable
     }
 
     [Fact]
+    public void UpdateGlobal_TracksModifiedTopLevelFields()
+    {
+        var manager = SettingsManager.InMemory();
+
+        manager.UpdateGlobal(s => s with { DefaultModel = "claude-4", Theme = "dark" });
+
+        Assert.Contains(nameof(CodingAgentSettings.DefaultModel), manager.ModifiedGlobalFields);
+        Assert.Contains(nameof(CodingAgentSettings.Theme), manager.ModifiedGlobalFields);
+    }
+
+    [Fact]
     public void Create_LoadsFromDisk_WhenFilesExist()
     {
         var agentDir = Path.Combine(_tempDir, "agent");
@@ -121,5 +132,61 @@ public sealed class SettingsManagerTests : IDisposable
         var reloaded = SettingsManager.Create(cwd, agentDir);
 
         Assert.Equal("saved-model", reloaded.Settings.DefaultModel);
+    }
+
+    [Fact]
+    public async Task FlushAsync_MergesOnlyModifiedGlobalFields()
+    {
+        var agentDir = Path.Combine(_tempDir, "agent");
+        var cwd = Path.Combine(_tempDir, "project");
+        Directory.CreateDirectory(agentDir);
+
+        var globalPath = Path.Combine(agentDir, "settings.json");
+        await File.WriteAllTextAsync(
+            globalPath,
+            """{"defaultModel":"disk-model","theme":"light","defaultProvider":"openai"}""");
+
+        var manager = SettingsManager.Create(cwd, agentDir);
+        manager.UpdateGlobal(settings => settings with { DefaultModel = "manager-model" });
+
+        await File.WriteAllTextAsync(
+            globalPath,
+            """{"defaultModel":"external-model","theme":"dark","defaultProvider":"anthropic"}""");
+
+        await manager.FlushAsync();
+
+        var reloaded = SettingsManager.Create(cwd, agentDir);
+        Assert.Equal("manager-model", reloaded.GlobalSettings.DefaultModel);
+        Assert.Equal("dark", reloaded.GlobalSettings.Theme);
+        Assert.Equal("anthropic", reloaded.GlobalSettings.DefaultProvider);
+        Assert.Empty(manager.ModifiedGlobalFields);
+    }
+
+    [Fact]
+    public async Task FlushAsync_MergesOnlyModifiedProjectFields()
+    {
+        var agentDir = Path.Combine(_tempDir, "agent");
+        var cwd = Path.Combine(_tempDir, "project");
+        Directory.CreateDirectory(agentDir);
+        Directory.CreateDirectory(Path.Combine(cwd, ".pi-sharp"));
+
+        var projectPath = Path.Combine(cwd, ".pi-sharp", "settings.json");
+        await File.WriteAllTextAsync(
+            projectPath,
+            """{"theme":"light","defaultModel":"disk-project"}""");
+
+        var manager = SettingsManager.Create(cwd, agentDir);
+        manager.UpdateProject(settings => settings with { Theme = "dark" });
+
+        await File.WriteAllTextAsync(
+            projectPath,
+            """{"theme":"external-theme","defaultModel":"external-project"}""");
+
+        await manager.FlushAsync();
+
+        var reloaded = SettingsManager.Create(cwd, agentDir);
+        Assert.Equal("dark", reloaded.ProjectSettings.Theme);
+        Assert.Equal("external-project", reloaded.ProjectSettings.DefaultModel);
+        Assert.Empty(manager.ModifiedProjectFields);
     }
 }

@@ -33,6 +33,8 @@ public sealed class CliArguments
 
     public string? ApiKey { get; init; }
 
+    public Uri? OtelEndpoint { get; init; }
+
     public string? WorkingDirectory { get; init; }
 
     public string? SystemPrompt { get; init; }
@@ -95,6 +97,7 @@ public static class CliArgumentsParser
         string? provider = null;
         string? model = null;
         string? apiKey = null;
+        Uri? otelEndpoint = null;
         string? workingDirectory = null;
         string? systemPrompt = null;
         ThinkingLevel? thinkingLevel = null;
@@ -167,6 +170,27 @@ public static class CliArgumentsParser
             if (argument == "--api-key")
             {
                 apiKey = ReadRequiredValue(args, ref index, argument, diagnostics);
+                continue;
+            }
+
+            if (argument == "--otel-endpoint")
+            {
+                var value = ReadRequiredValue(args, ref index, argument, diagnostics);
+                if (value is not null)
+                {
+                    if (!Uri.TryCreate(value, UriKind.Absolute, out var parsedEndpoint))
+                    {
+                        diagnostics.Add(
+                            new CliDiagnostic(
+                                CliDiagnosticSeverity.Error,
+                                $"Invalid value for '--otel-endpoint': '{value}' is not an absolute URL."));
+                    }
+                    else
+                    {
+                        otelEndpoint = parsedEndpoint;
+                    }
+                }
+
                 continue;
             }
 
@@ -318,6 +342,7 @@ public static class CliArgumentsParser
             Provider = provider,
             Model = model,
             ApiKey = apiKey,
+            OtelEndpoint = otelEndpoint,
             WorkingDirectory = workingDirectory,
             SystemPrompt = systemPrompt,
             AppendSystemPromptInputs = appendSystemPromptInputs,
@@ -349,6 +374,7 @@ Options:
   --provider <name>              Provider name (default: openai)
   --model <id>                   Model id (default: provider default model)
   --api-key <key>                API key (defaults to provider env var)
+  --otel-endpoint <url>          Export chat traces to an OTLP endpoint
   --cwd <dir>                    Working directory (default: current directory)
   --system-prompt <text>         Replace the default system prompt
   --append-system-prompt <text>  Append text or file contents to the system prompt

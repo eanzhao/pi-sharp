@@ -30,6 +30,13 @@ public readonly record struct ProviderId(string Value)
     public static implicit operator string(ProviderId value) => value.Value;
 }
 
+public sealed record OAuthSettings(
+    Uri AuthorizationEndpoint,
+    Uri TokenEndpoint,
+    string ClientId,
+    Uri RedirectUri,
+    IReadOnlyList<string> Scopes);
+
 public sealed record ProviderConfiguration(
     ProviderId ProviderId,
     ApiId ApiId,
@@ -38,7 +45,8 @@ public sealed record ProviderConfiguration(
     string? DefaultModelId = null,
     string? ApiKeyEnvironmentVariable = null,
     IReadOnlyDictionary<string, string>? DefaultHeaders = null,
-    IReadOnlyDictionary<string, string>? Metadata = null);
+    IReadOnlyDictionary<string, string>? Metadata = null,
+    OAuthSettings? OAuthSettings = null);
 
 public sealed record ProviderRegistration(
     ProviderConfiguration Configuration,

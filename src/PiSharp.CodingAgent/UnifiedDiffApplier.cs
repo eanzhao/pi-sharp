@@ -1,140 +1,295 @@
+using System.Text.RegularExpressions;
+
 namespace PiSharp.CodingAgent;
 
 public static class UnifiedDiffApplier
 {
-    public static string Apply(string originalContent, string diff)
+    private static readonly Regex HunkHeaderPattern = new(
+        "^@@ -(?<oldStart>\\d+)(,(?<oldCount>\\d+))? \\+(?<newStart>\\d+)(,(?<newCount>\\d+))? @@",
+        RegexOptions.CultureInvariant);
+
+    public static IReadOnlyList<string> ExtractTargetPaths(string diff) =>
+        Parse(diff)
+            .Select(static patch => patch.TargetPath)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+    public static string Apply(string originalContent, string diff, string? filePath = null)
     {
         ArgumentNullException.ThrowIfNull(originalContent);
         ArgumentNullException.ThrowIfNull(diff);
 
-        var originalLines = originalContent.Split('\n');
-        var result = new List<string>(originalLines);
-        var hunks = ParseHunks(diff);
-        var offset = 0;
-
-        foreach (var hunk in hunks)
+        var patches = Parse(diff);
+        if (patches.Count == 0)
         {
-            offset = ApplyHunk(result, hunk, offset);
+            throw new InvalidOperationException("No unified diff file patches were found.");
         }
 
-        return string.Join('\n', result);
+        var patch = filePath is null
+            ? patches.Count == 1
+                ? patches[0]
+                : throw new InvalidOperationException("The diff contains multiple file patches. Specify a file path.")
+            : patches.FirstOrDefault(candidate =>
+                string.Equals(candidate.TargetPath, filePath, StringComparison.Ordinal) ||
+                string.Equals(candidate.OldPath, filePath, StringComparison.Ordinal))
+                ?? throw new InvalidOperationException($"The diff does not contain a patch for '{filePath}'.");
+
+        return Apply(originalContent, patch);
     }
 
-    private static List<DiffHunk> ParseHunks(string diff)
+    internal static IReadOnlyList<UnifiedDiffFilePatch> Parse(string diff)
     {
-        var hunks = new List<DiffHunk>();
-        var lines = diff.Split('\n');
-        DiffHunk? current = null;
+        ArgumentNullException.ThrowIfNull(diff);
 
-        foreach (var line in lines)
+        var lines = SplitLines(NormalizeLineEndings(diff));
+        var patches = new List<UnifiedDiffFilePatch>();
+
+        for (var index = 0; index < lines.Count; index++)
         {
-            if (line.StartsWith("@@", StringComparison.Ordinal))
+            if (!lines[index].StartsWith("--- ", StringComparison.Ordinal))
             {
-                current = ParseHunkHeader(line);
-                if (current is not null)
+                continue;
+            }
+
+            if (index + 1 >= lines.Count || !lines[index + 1].StartsWith("+++ ", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Invalid unified diff: missing +++ header after '{lines[index]}'.");
+            }
+
+            var oldPath = ParseHeaderPath(lines[index][4..]);
+            var newPath = ParseHeaderPath(lines[index + 1][4..]);
+            index += 2;
+
+            var hunks = new List<UnifiedDiffHunk>();
+            while (index < lines.Count && !lines[index].StartsWith("--- ", StringComparison.Ordinal))
+            {
+                if (string.IsNullOrEmpty(lines[index]))
                 {
-                    hunks.Add(current);
+                    index++;
+                    continue;
                 }
 
-                continue;
+                if (!lines[index].StartsWith("@@", StringComparison.Ordinal))
+                {
+                    index++;
+                    continue;
+                }
+
+                hunks.Add(ParseHunk(lines, ref index));
             }
 
-            if (line.StartsWith("---", StringComparison.Ordinal) ||
-                line.StartsWith("+++", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (current is null)
-            {
-                continue;
-            }
-
-            if (line.StartsWith('-'))
-            {
-                current.Lines.Add(new DiffLine(DiffLineKind.Remove, line[1..]));
-            }
-            else if (line.StartsWith('+'))
-            {
-                current.Lines.Add(new DiffLine(DiffLineKind.Add, line[1..]));
-            }
-            else if (line.StartsWith(' '))
-            {
-                current.Lines.Add(new DiffLine(DiffLineKind.Context, line[1..]));
-            }
-            else if (line.Length > 0)
-            {
-                current.Lines.Add(new DiffLine(DiffLineKind.Context, line));
-            }
+            index--;
+            patches.Add(new UnifiedDiffFilePatch(oldPath, newPath, hunks.ToArray()));
         }
 
-        return hunks;
+        return patches;
     }
 
-    private static DiffHunk? ParseHunkHeader(string line)
+    internal static string Apply(string originalContent, UnifiedDiffFilePatch patch)
     {
-        var start = line.IndexOf("-", StringComparison.Ordinal) + 1;
-        var comma = line.IndexOf(",", start, StringComparison.Ordinal);
-        var space = line.IndexOf(" +", start, StringComparison.Ordinal);
+        var normalizedContent = NormalizeLineEndings(originalContent);
+        var originalHasTrailingNewline = normalizedContent.EndsWith('\n');
+        var lineEnding = originalContent.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var originalLines = SplitContentLines(normalizedContent);
 
-        if (start <= 0 || space < 0)
+        var resultLines = new List<string>(originalLines.Count);
+        var sourceIndex = 0;
+
+        foreach (var hunk in patch.Hunks)
         {
-            return null;
-        }
-
-        var startLine = int.Parse(comma > start ? line[start..comma] : line[start..space]);
-        return new DiffHunk { OriginalStartLine = startLine };
-    }
-
-    private static int ApplyHunk(List<string> result, DiffHunk hunk, int offset)
-    {
-        var position = hunk.OriginalStartLine - 1 + offset;
-        var removedCount = 0;
-        var addedCount = 0;
-
-        foreach (var line in hunk.Lines)
-        {
-            switch (line.Kind)
+            var expectedIndex = Math.Max(hunk.OldStart - 1, 0);
+            if (expectedIndex < sourceIndex)
             {
-                case DiffLineKind.Context:
-                    if (position < result.Count && result[position].TrimEnd('\r') != line.Content.TrimEnd('\r'))
-                    {
-                        throw new InvalidOperationException(
-                            $"Context mismatch at line {position + 1}: expected '{line.Content}', got '{result[position]}'.");
-                    }
+                throw new InvalidOperationException($"Patch for '{patch.TargetPath}' contains overlapping hunks near line {hunk.OldStart}.");
+            }
 
-                    position++;
-                    break;
+            while (sourceIndex < expectedIndex && sourceIndex < originalLines.Count)
+            {
+                resultLines.Add(originalLines[sourceIndex]);
+                sourceIndex++;
+            }
 
-                case DiffLineKind.Remove:
-                    if (position < result.Count && result[position].TrimEnd('\r') != line.Content.TrimEnd('\r'))
-                    {
-                        throw new InvalidOperationException(
-                            $"Remove mismatch at line {position + 1}: expected '{line.Content}', got '{result[position]}'.");
-                    }
-
-                    result.RemoveAt(position);
-                    removedCount++;
-                    break;
-
-                case DiffLineKind.Add:
-                    result.Insert(position, line.Content);
-                    position++;
-                    addedCount++;
-                    break;
+            foreach (var line in hunk.Lines)
+            {
+                switch (line.Kind)
+                {
+                    case UnifiedDiffLineKind.Context:
+                        VerifyMatch(originalLines, sourceIndex, line.Text, patch.TargetPath, hunk.OldStart, "context");
+                        resultLines.Add(originalLines[sourceIndex]);
+                        sourceIndex++;
+                        break;
+                    case UnifiedDiffLineKind.Remove:
+                        VerifyMatch(originalLines, sourceIndex, line.Text, patch.TargetPath, hunk.OldStart, "remove");
+                        sourceIndex++;
+                        break;
+                    case UnifiedDiffLineKind.Add:
+                        resultLines.Add(line.Text);
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Unsupported diff line kind '{line.Kind}'.");
+                }
             }
         }
 
-        return offset + addedCount - removedCount;
+        while (sourceIndex < originalLines.Count)
+        {
+            resultLines.Add(originalLines[sourceIndex]);
+            sourceIndex++;
+        }
+
+        var hasTrailingNewline = patch.Hunks.Count > 0 ? true : originalHasTrailingNewline;
+        return JoinLines(resultLines, lineEnding, hasTrailingNewline);
     }
 
-    private sealed class DiffHunk
+    private static UnifiedDiffHunk ParseHunk(IReadOnlyList<string> lines, ref int index)
     {
-        public int OriginalStartLine { get; init; }
-        public List<DiffLine> Lines { get; } = [];
+        var header = lines[index];
+        var match = HunkHeaderPattern.Match(header);
+        if (!match.Success)
+        {
+            throw new InvalidOperationException($"Invalid unified diff hunk header: '{header}'.");
+        }
+
+        var oldStart = int.Parse(match.Groups["oldStart"].Value);
+        var oldCount = ParseCount(match.Groups["oldCount"].Value);
+        var newStart = int.Parse(match.Groups["newStart"].Value);
+        var newCount = ParseCount(match.Groups["newCount"].Value);
+        index++;
+
+        var hunkLines = new List<UnifiedDiffLine>();
+        while (index < lines.Count)
+        {
+            var line = lines[index];
+            if (line.StartsWith("@@", StringComparison.Ordinal) ||
+                line.StartsWith("--- ", StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            if (line.StartsWith("\\", StringComparison.Ordinal))
+            {
+                index++;
+                continue;
+            }
+
+            if (line.Length == 0)
+            {
+                throw new InvalidOperationException("Invalid unified diff: hunk lines must start with ' ', '+', or '-'.");
+            }
+
+            hunkLines.Add(line[0] switch
+            {
+                ' ' => new UnifiedDiffLine(UnifiedDiffLineKind.Context, line[1..]),
+                '+' => new UnifiedDiffLine(UnifiedDiffLineKind.Add, line[1..]),
+                '-' => new UnifiedDiffLine(UnifiedDiffLineKind.Remove, line[1..]),
+                _ => throw new InvalidOperationException($"Invalid unified diff line: '{line}'."),
+            });
+
+            index++;
+        }
+
+        return new UnifiedDiffHunk(oldStart, oldCount, newStart, newCount, hunkLines.ToArray());
     }
 
-    private sealed record DiffLine(DiffLineKind Kind, string Content);
+    private static string ParseHeaderPath(string value)
+    {
+        var headerValue = value.Trim();
+        var tabIndex = headerValue.IndexOf('\t');
+        if (tabIndex >= 0)
+        {
+            headerValue = headerValue[..tabIndex];
+        }
 
-    private enum DiffLineKind { Context, Add, Remove }
+        if (headerValue == "/dev/null")
+        {
+            return headerValue;
+        }
+
+        if ((headerValue.StartsWith("a/", StringComparison.Ordinal) ||
+             headerValue.StartsWith("b/", StringComparison.Ordinal)) &&
+            headerValue.Length > 2)
+        {
+            headerValue = headerValue[2..];
+        }
+
+        return headerValue;
+    }
+
+    private static int ParseCount(string value) =>
+        string.IsNullOrEmpty(value) ? 1 : int.Parse(value);
+
+    private static void VerifyMatch(
+        IReadOnlyList<string> originalLines,
+        int index,
+        string expected,
+        string path,
+        int oldStart,
+        string operation)
+    {
+        var actual = index < originalLines.Count ? originalLines[index] : "<end of file>";
+        if (index >= originalLines.Count || !string.Equals(actual, expected, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Failed to apply {operation} hunk for '{path}' near original line {oldStart}: expected '{expected}', found '{actual}'.");
+        }
+    }
+
+    private static string NormalizeLineEndings(string text) =>
+        text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+
+    private static IReadOnlyList<string> SplitLines(string text) =>
+        text.Split('\n');
+
+    private static List<string> SplitContentLines(string content)
+    {
+        if (content.Length == 0)
+        {
+            return [];
+        }
+
+        var lines = content.Split('\n').ToList();
+        if (content.EndsWith('\n'))
+        {
+            lines.RemoveAt(lines.Count - 1);
+        }
+
+        return lines;
+    }
+
+    private static string JoinLines(IReadOnlyList<string> lines, string lineEnding, bool hasTrailingNewline)
+    {
+        if (lines.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var content = string.Join(lineEnding, lines);
+        return hasTrailingNewline ? content + lineEnding : content;
+    }
+}
+
+internal sealed record UnifiedDiffFilePatch(
+    string OldPath,
+    string NewPath,
+    IReadOnlyList<UnifiedDiffHunk> Hunks)
+{
+    public string TargetPath => NewPath == "/dev/null" ? OldPath : NewPath;
+    public bool IsNewFile => OldPath == "/dev/null";
+    public bool IsDeletion => NewPath == "/dev/null";
+}
+
+internal sealed record UnifiedDiffHunk(
+    int OldStart,
+    int OldCount,
+    int NewStart,
+    int NewCount,
+    IReadOnlyList<UnifiedDiffLine> Lines);
+
+internal sealed record UnifiedDiffLine(UnifiedDiffLineKind Kind, string Text);
+
+internal enum UnifiedDiffLineKind
+{
+    Context,
+    Add,
+    Remove,
 }

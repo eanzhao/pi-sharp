@@ -11,6 +11,10 @@ public sealed record CutPointResult(
     int FirstKeptIndex,
     bool SplitsTurn);
 
+public sealed record CompactionDetails(
+    IReadOnlyList<string> ReadFiles,
+    IReadOnlyList<string> ModifiedFiles);
+
 public sealed class CompactionService
 {
     private readonly IChatClient _chatClient;
@@ -61,23 +65,66 @@ public sealed class CompactionService
         return new CutPointResult(lastValidCut, splitsTurn);
     }
 
+    public static CompactionDetails ExtractFileOperations(IReadOnlyList<ChatMessage> messages)
+    {
+        var readFiles = new List<string>();
+        var modifiedFiles = new List<string>();
+
+        foreach (var message in messages)
+        {
+            foreach (var content in message.Contents.OfType<FunctionCallContent>())
+            {
+                switch (content.Name)
+                {
+                    case BuiltInToolNames.Read:
+                        AddIfPresent(readFiles, GetArgumentString(content.Arguments, "path"));
+                        break;
+                    case BuiltInToolNames.Write:
+                    case BuiltInToolNames.Edit:
+                        AddIfPresent(modifiedFiles, GetArgumentString(content.Arguments, "path"));
+                        break;
+                    case BuiltInToolNames.EditDiff:
+                        try
+                        {
+                            foreach (var path in UnifiedDiffApplier.ExtractTargetPaths(GetArgumentString(content.Arguments, "diff") ?? string.Empty))
+                            {
+                                AddIfPresent(modifiedFiles, path);
+                            }
+                        }
+                        catch (InvalidOperationException)
+                        {
+                        }
+                        break;
+                }
+            }
+        }
+
+        return new CompactionDetails(readFiles.ToArray(), modifiedFiles.ToArray());
+    }
+
     public async Task<string> GenerateSummaryAsync(
         IReadOnlyList<ChatMessage> messagesToSummarize,
+        string? previousSummary = null,
         CancellationToken ct = default)
     {
         if (messagesToSummarize.Count == 0)
         {
-            return string.Empty;
+            return previousSummary ?? string.Empty;
         }
 
+        var fileOps = ExtractFileOperations(messagesToSummarize);
         var conversationText = FormatConversation(messagesToSummarize);
+        var previousContext = string.IsNullOrWhiteSpace(previousSummary)
+            ? string.Empty
+            : $"\nPrevious summary:\n{previousSummary}\n";
+
         var prompt = $"""
             Summarize the following conversation concisely. Focus on:
             - Key decisions made
             - Files read, written, or modified
             - Current state of the task
             - Any unresolved issues
-
+            {previousContext}
             Conversation:
             {conversationText}
 
@@ -88,12 +135,25 @@ public sealed class CompactionService
             [new ChatMessage(ChatRole.User, prompt)],
             cancellationToken: ct).ConfigureAwait(false);
 
-        return response.Text ?? string.Empty;
+        var summary = response.Text ?? string.Empty;
+
+        if (fileOps.ReadFiles.Count > 0)
+        {
+            summary += $"\n\n<read-files>\n{string.Join("\n", fileOps.ReadFiles)}\n</read-files>";
+        }
+
+        if (fileOps.ModifiedFiles.Count > 0)
+        {
+            summary += $"\n\n<modified-files>\n{string.Join("\n", fileOps.ModifiedFiles)}\n</modified-files>";
+        }
+
+        return summary;
     }
 
     public async Task<CompactionEntry?> TryCompactAsync(
         IReadOnlyList<ChatMessage> messages,
         int contextWindow,
+        string? previousSummary = null,
         CancellationToken ct = default)
     {
         var contextTokens = TokenEstimation.EstimateTokens(messages);
@@ -109,7 +169,8 @@ public sealed class CompactionService
         }
 
         var messagesToSummarize = messages.Take(cutPoint.FirstKeptIndex).ToArray();
-        var summary = await GenerateSummaryAsync(messagesToSummarize, ct).ConfigureAwait(false);
+        var details = ExtractFileOperations(messagesToSummarize);
+        var summary = await GenerateSummaryAsync(messagesToSummarize, previousSummary, ct).ConfigureAwait(false);
 
         return new CompactionEntry
         {
@@ -120,6 +181,31 @@ public sealed class CompactionService
                 ? $"index:{cutPoint.FirstKeptIndex}"
                 : string.Empty,
             TokensBefore = contextTokens,
+            Details = details,
+        };
+    }
+
+    private static void AddIfPresent(List<string> paths, string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path) &&
+            !paths.Contains(path, StringComparer.Ordinal))
+        {
+            paths.Add(path);
+        }
+    }
+
+    private static string? GetArgumentString(IDictionary<string, object?>? arguments, string name)
+    {
+        if (arguments?.TryGetValue(name, out var value) != true || value is null)
+        {
+            return null;
+        }
+
+        return value switch
+        {
+            string text => text,
+            System.Text.Json.JsonElement jsonElement when jsonElement.ValueKind == System.Text.Json.JsonValueKind.String => jsonElement.GetString(),
+            _ => value.ToString(),
         };
     }
 

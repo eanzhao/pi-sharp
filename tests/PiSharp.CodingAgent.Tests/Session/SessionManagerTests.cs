@@ -228,6 +228,36 @@ public sealed class SessionManagerTests : IDisposable
     }
 
     [Fact]
+    public void BuildContext_RoundTripsDataContent()
+    {
+        var manager = new SessionManager(_tempDir, "/tmp");
+        manager.NewSession();
+
+        var user = new ChatMessage(
+            ChatRole.User,
+            [
+                new TextContent("Look at this diagram."),
+                new DataContent(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, "image/png")
+                {
+                    Name = "diagram.png",
+                },
+            ]);
+
+        manager.AppendEntry(SessionMessageEntry.FromChatMessage(user));
+
+        var context = manager.BuildContext();
+
+        var message = Assert.Single(context.Messages);
+        Assert.Equal(2, message.Contents.Count);
+        Assert.Equal("Look at this diagram.", Assert.IsType<TextContent>(message.Contents[0]).Text);
+
+        var data = Assert.IsType<DataContent>(message.Contents[1]);
+        Assert.Equal("image/png", data.MediaType);
+        Assert.Equal("diagram.png", data.Name);
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, data.Data.ToArray());
+    }
+
+    [Fact]
     public async Task ResolveSessionFile_SupportsLatestAliasAndId()
     {
         var manager = new SessionManager(_tempDir, "/tmp");

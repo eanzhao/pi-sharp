@@ -32,6 +32,7 @@ public static class CodingAgentTools
             [BuiltInToolNames.Bash] = "Run shell commands from the working directory",
             [BuiltInToolNames.Edit] = "Apply targeted text replacements to existing files",
             [BuiltInToolNames.Write] = "Create or overwrite files",
+            [BuiltInToolNames.EditDiff] = "Apply unified diff patches to files",
             [BuiltInToolNames.Grep] = "Search file contents recursively",
             [BuiltInToolNames.Find] = "Find files and directories by name",
             [BuiltInToolNames.Ls] = "List directory contents",
@@ -76,7 +77,7 @@ public static class CodingAgentTools
             [BuiltInToolNames.EditDiff] = AgentTool.Create(
                 runtime.EditDiffAsync,
                 name: BuiltInToolNames.EditDiff,
-                description: "Apply a unified diff patch to an existing file in the working directory."),
+                description: "Apply a unified diff patch to files in the working directory."),
         };
     }
 
@@ -284,21 +285,64 @@ public static class CodingAgentTools
         }
 
         public async Task<string> EditDiffAsync(
-            string path,
             string diff,
             CancellationToken cancellationToken = default)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(path);
             ArgumentException.ThrowIfNullOrWhiteSpace(diff);
 
-            var fullPath = scope.ResolvePath(path);
-            EnsureFileExists(fullPath, path);
+            var patches = UnifiedDiffApplier.Parse(diff);
+            if (patches.Count == 0)
+            {
+                throw new InvalidOperationException("No unified diff file patches were found.");
+            }
 
-            var content = await File.ReadAllTextAsync(fullPath, cancellationToken).ConfigureAwait(false);
-            var updatedContent = UnifiedDiffApplier.Apply(content, diff);
-            await File.WriteAllTextAsync(fullPath, updatedContent, cancellationToken).ConfigureAwait(false);
+            var updatedPaths = new List<string>(patches.Count);
 
-            return $"Applied diff to {scope.ToDisplayPath(fullPath)}.";
+            foreach (var patch in patches)
+            {
+                var sourcePath = patch.IsNewFile ? null : scope.ResolvePath(patch.OldPath);
+                var targetPath = patch.IsDeletion ? null : scope.ResolvePath(patch.NewPath);
+
+                string originalContent;
+                if (sourcePath is null)
+                {
+                    originalContent = string.Empty;
+                }
+                else
+                {
+                    EnsureFileExists(sourcePath, patch.OldPath);
+                    originalContent = await File.ReadAllTextAsync(sourcePath, cancellationToken).ConfigureAwait(false);
+                }
+
+                var updatedContent = UnifiedDiffApplier.Apply(originalContent, patch);
+
+                if (patch.IsDeletion)
+                {
+                    File.Delete(sourcePath!);
+                    updatedPaths.Add(scope.ToDisplayPath(sourcePath!));
+                    continue;
+                }
+
+                var targetDirectory = Path.GetDirectoryName(targetPath!);
+                if (!string.IsNullOrEmpty(targetDirectory))
+                {
+                    Directory.CreateDirectory(targetDirectory);
+                }
+
+                await File.WriteAllTextAsync(targetPath!, updatedContent, cancellationToken).ConfigureAwait(false);
+                updatedPaths.Add(scope.ToDisplayPath(targetPath!));
+
+                if (!patch.IsNewFile &&
+                    sourcePath is not null &&
+                    !string.Equals(sourcePath, targetPath, PathComparison))
+                {
+                    File.Delete(sourcePath);
+                }
+            }
+
+            return updatedPaths.Count == 1
+                ? $"Applied unified diff to {updatedPaths[0]}."
+                : $"Applied unified diff to {updatedPaths.Count} files:\n{string.Join("\n", updatedPaths)}";
         }
 
         public async Task<string> BashAsync(

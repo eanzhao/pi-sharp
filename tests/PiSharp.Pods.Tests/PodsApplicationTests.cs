@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using PiSharp.Agent;
+using PiSharp.Pods.Providers;
 using PiSharp.Pods.Tests.Support;
 
 namespace PiSharp.Pods.Tests;
@@ -23,6 +24,8 @@ public sealed class PodsApplicationTests : IDisposable
         Assert.Contains("--no-verify", helpText, StringComparison.Ordinal);
         Assert.Contains("--tail <lines>", helpText, StringComparison.Ordinal);
         Assert.Contains("--tty", helpText, StringComparison.Ordinal);
+        Assert.Contains("--provider <name>", helpText, StringComparison.Ordinal);
+        Assert.Contains("datacrunch, runpod, vastai", helpText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -66,6 +69,50 @@ public sealed class PodsApplicationTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Contains("Known models:", output.ToString(), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Qwen/Qwen2.5-Coder-32B-Instruct", output.ToString());
+    }
+
+    [Fact]
+    public async Task RunAsync_SetupCommand_WithProvider_UsesProviderDefaults()
+    {
+        var transport = new FakePodSshTransport();
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("SSH OK", string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult(string.Empty, string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("0, NVIDIA H100, 80 GB\n", string.Empty, 0));
+        transport.StreamingResponses.Enqueue(new FakeStreamingResponse(0, []));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var app = new PodsApplication(
+            new PodsConsoleEnvironment(
+                new StringReader(string.Empty),
+                output,
+                error,
+                _rootDirectory,
+                false,
+                environmentVariables: new Dictionary<string, string?>
+                {
+                    ["HF_TOKEN"] = "hf-token",
+                    ["PI_API_KEY"] = "pi-key",
+                }),
+            new PodService(
+                new PodsConfigurationStore(_rootDirectory),
+                transport,
+                getEnvironmentVariable: name => name switch
+                {
+                    "HF_TOKEN" => "hf-token",
+                    "PI_API_KEY" => "pi-key",
+                    _ => null,
+                }),
+            gpuProviderRegistry: new GpuProviderRegistry());
+
+        var exitCode = await app.RunAsync(["setup", "rp1", "ssh root@1.2.3.4", "--provider", "runpod"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Using provider defaults for 'runpod'.", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Volume: Attach a RunPod network volume", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains(transport.StreamingInvocations, invocation =>
+            invocation.Command.Contains("--models-path '/runpod-volume'", StringComparison.Ordinal) &&
+            invocation.Command.Contains("--mount 'mkdir -p /runpod-volume'", StringComparison.Ordinal));
     }
 
     [Fact]

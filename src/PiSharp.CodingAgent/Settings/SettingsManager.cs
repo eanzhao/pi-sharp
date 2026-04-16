@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace PiSharp.CodingAgent;
 
@@ -59,16 +58,16 @@ public sealed class SettingsManager
     {
         var previous = _globalSettings;
         _globalSettings = transform(_globalSettings);
-        TrackChanges(previous, _globalSettings, _modifiedGlobalFields);
-        _merged = CodingAgentSettings.Default.MergeWith(_globalSettings).MergeWith(_projectSettings);
+        RecordModifiedFields(GetModifiedFieldNames(previous, _globalSettings), _modifiedGlobalFields);
+        RefreshMergedSettings();
     }
 
     public void UpdateProject(Func<CodingAgentSettings, CodingAgentSettings> transform)
     {
         var previous = _projectSettings;
         _projectSettings = transform(_projectSettings);
-        TrackChanges(previous, _projectSettings, _modifiedProjectFields);
-        _merged = CodingAgentSettings.Default.MergeWith(_globalSettings).MergeWith(_projectSettings);
+        RecordModifiedFields(GetModifiedFieldNames(previous, _projectSettings), _modifiedProjectFields);
+        RefreshMergedSettings();
     }
 
     public async Task ReloadAsync(CancellationToken ct = default)
@@ -85,44 +84,82 @@ public sealed class SettingsManager
 
         _modifiedGlobalFields.Clear();
         _modifiedProjectFields.Clear();
-        _merged = CodingAgentSettings.Default.MergeWith(_globalSettings).MergeWith(_projectSettings);
+        RefreshMergedSettings();
     }
 
     public async Task FlushAsync(CancellationToken ct = default)
     {
         if (GlobalSettingsPath is not null && _modifiedGlobalFields.Count > 0)
         {
-            await MergeAndSaveAsync(GlobalSettingsPath, _globalSettings, _modifiedGlobalFields, ct).ConfigureAwait(false);
+            var existingGlobalSettings = await LoadFromFileAsync(GlobalSettingsPath, ct).ConfigureAwait(false);
+            _globalSettings = MergeModifiedFields(existingGlobalSettings, _globalSettings, _modifiedGlobalFields);
+            await SaveToFileAsync(GlobalSettingsPath, _globalSettings, ct).ConfigureAwait(false);
             _modifiedGlobalFields.Clear();
         }
 
         if (ProjectSettingsPath is not null && _modifiedProjectFields.Count > 0)
         {
-            await MergeAndSaveAsync(ProjectSettingsPath, _projectSettings, _modifiedProjectFields, ct).ConfigureAwait(false);
+            var existingProjectSettings = await LoadFromFileAsync(ProjectSettingsPath, ct).ConfigureAwait(false);
+            _projectSettings = MergeModifiedFields(existingProjectSettings, _projectSettings, _modifiedProjectFields);
+            await SaveToFileAsync(ProjectSettingsPath, _projectSettings, ct).ConfigureAwait(false);
             _modifiedProjectFields.Clear();
+        }
+
+        RefreshMergedSettings();
+    }
+
+    private static IReadOnlyList<string> GetModifiedFieldNames(CodingAgentSettings previous, CodingAgentSettings current)
+    {
+        var modifiedFields = new List<string>();
+
+        if (!Equals(previous.DefaultProvider, current.DefaultProvider)) modifiedFields.Add(nameof(CodingAgentSettings.DefaultProvider));
+        if (!Equals(previous.DefaultModel, current.DefaultModel)) modifiedFields.Add(nameof(CodingAgentSettings.DefaultModel));
+        if (!Equals(previous.DefaultThinkingLevel, current.DefaultThinkingLevel)) modifiedFields.Add(nameof(CodingAgentSettings.DefaultThinkingLevel));
+        if (!Equals(previous.SessionDir, current.SessionDir)) modifiedFields.Add(nameof(CodingAgentSettings.SessionDir));
+        if (!Equals(previous.ShellPath, current.ShellPath)) modifiedFields.Add(nameof(CodingAgentSettings.ShellPath));
+        if (!Equals(previous.SteeringMode, current.SteeringMode)) modifiedFields.Add(nameof(CodingAgentSettings.SteeringMode));
+        if (!Equals(previous.FollowUpMode, current.FollowUpMode)) modifiedFields.Add(nameof(CodingAgentSettings.FollowUpMode));
+        if (!Equals(previous.Theme, current.Theme)) modifiedFields.Add(nameof(CodingAgentSettings.Theme));
+        if (!Equals(previous.QuietStartup, current.QuietStartup)) modifiedFields.Add(nameof(CodingAgentSettings.QuietStartup));
+        if (!Equals(previous.Compaction, current.Compaction)) modifiedFields.Add(nameof(CodingAgentSettings.Compaction));
+        if (!Equals(previous.Retry, current.Retry)) modifiedFields.Add(nameof(CodingAgentSettings.Retry));
+
+        return modifiedFields;
+    }
+
+    private static void RecordModifiedFields(IEnumerable<string> modifiedFields, HashSet<string> destination)
+    {
+        foreach (var modifiedField in modifiedFields)
+        {
+            destination.Add(modifiedField);
         }
     }
 
-    private static void TrackChanges(CodingAgentSettings previous, CodingAgentSettings current, HashSet<string> modified)
+    private static CodingAgentSettings MergeModifiedFields(
+        CodingAgentSettings existing,
+        CodingAgentSettings updated,
+        IReadOnlySet<string> modifiedFields)
     {
-        if (!Equals(previous.DefaultProvider, current.DefaultProvider)) modified.Add("defaultProvider");
-        if (!Equals(previous.DefaultModel, current.DefaultModel)) modified.Add("defaultModel");
-        if (!Equals(previous.DefaultThinkingLevel, current.DefaultThinkingLevel)) modified.Add("defaultThinkingLevel");
-        if (!Equals(previous.SessionDir, current.SessionDir)) modified.Add("sessionDir");
-        if (!Equals(previous.ShellPath, current.ShellPath)) modified.Add("shellPath");
-        if (!Equals(previous.SteeringMode, current.SteeringMode)) modified.Add("steeringMode");
-        if (!Equals(previous.FollowUpMode, current.FollowUpMode)) modified.Add("followUpMode");
-        if (!Equals(previous.Theme, current.Theme)) modified.Add("theme");
-        if (!Equals(previous.QuietStartup, current.QuietStartup)) modified.Add("quietStartup");
-        if (!Equals(previous.Compaction, current.Compaction)) modified.Add("compaction");
-        if (!Equals(previous.Retry, current.Retry)) modified.Add("retry");
+        return new CodingAgentSettings
+        {
+            DefaultProvider = Select(nameof(CodingAgentSettings.DefaultProvider), existing.DefaultProvider, updated.DefaultProvider),
+            DefaultModel = Select(nameof(CodingAgentSettings.DefaultModel), existing.DefaultModel, updated.DefaultModel),
+            DefaultThinkingLevel = Select(nameof(CodingAgentSettings.DefaultThinkingLevel), existing.DefaultThinkingLevel, updated.DefaultThinkingLevel),
+            SessionDir = Select(nameof(CodingAgentSettings.SessionDir), existing.SessionDir, updated.SessionDir),
+            ShellPath = Select(nameof(CodingAgentSettings.ShellPath), existing.ShellPath, updated.ShellPath),
+            SteeringMode = Select(nameof(CodingAgentSettings.SteeringMode), existing.SteeringMode, updated.SteeringMode),
+            FollowUpMode = Select(nameof(CodingAgentSettings.FollowUpMode), existing.FollowUpMode, updated.FollowUpMode),
+            Theme = Select(nameof(CodingAgentSettings.Theme), existing.Theme, updated.Theme),
+            QuietStartup = Select(nameof(CodingAgentSettings.QuietStartup), existing.QuietStartup, updated.QuietStartup),
+            Compaction = Select(nameof(CodingAgentSettings.Compaction), existing.Compaction, updated.Compaction),
+            Retry = Select(nameof(CodingAgentSettings.Retry), existing.Retry, updated.Retry),
+        };
+
+        T? Select<T>(string fieldName, T? existingValue, T? updatedValue) =>
+            modifiedFields.Contains(fieldName) ? updatedValue : existingValue;
     }
 
-    private static async Task MergeAndSaveAsync(
-        string path,
-        CodingAgentSettings settings,
-        IReadOnlySet<string> modifiedFields,
-        CancellationToken ct)
+    private static async Task SaveToFileAsync(string path, CodingAgentSettings settings, CancellationToken ct)
     {
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(directory))
@@ -130,42 +167,8 @@ public sealed class SettingsManager
             Directory.CreateDirectory(directory);
         }
 
-        JsonNode existing;
-        if (File.Exists(path))
-        {
-            try
-            {
-                var json = await File.ReadAllTextAsync(path, ct).ConfigureAwait(false);
-                existing = JsonNode.Parse(json) ?? new JsonObject();
-            }
-            catch
-            {
-                existing = new JsonObject();
-            }
-        }
-        else
-        {
-            existing = new JsonObject();
-        }
-
-        var newNode = JsonSerializer.SerializeToNode(settings, JsonOptions);
-        if (newNode is JsonObject newObj && existing is JsonObject existingObj)
-        {
-            foreach (var field in modifiedFields)
-            {
-                if (newObj.ContainsKey(field))
-                {
-                    existingObj[field] = newObj[field]?.DeepClone();
-                }
-                else
-                {
-                    existingObj.Remove(field);
-                }
-            }
-        }
-
-        var output = existing.ToJsonString(JsonOptions);
-        await File.WriteAllTextAsync(path, output, ct).ConfigureAwait(false);
+        await using var stream = File.Create(path);
+        await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, ct).ConfigureAwait(false);
     }
 
     private static CodingAgentSettings LoadFromFile(string path)
@@ -204,4 +207,7 @@ public sealed class SettingsManager
             return new CodingAgentSettings();
         }
     }
+
+    private void RefreshMergedSettings() =>
+        _merged = CodingAgentSettings.Default.MergeWith(_globalSettings).MergeWith(_projectSettings);
 }

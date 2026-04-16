@@ -90,6 +90,7 @@ public sealed record CompactionEntry : SessionEntry
     public required string Summary { get; init; }
     public required string FirstKeptEntryId { get; init; }
     public required int TokensBefore { get; init; }
+    public CompactionDetails? Details { get; init; }
 }
 
 public sealed record LabelEntry : SessionEntry
@@ -112,12 +113,15 @@ public enum SessionContentType
     Reasoning,
     FunctionCall,
     FunctionResult,
+    Data,
 }
 
 public sealed record SessionContent
 {
     public required SessionContentType Type { get; init; }
     public string? Text { get; init; }
+    public string? DataUri { get; init; }
+    public string? MediaType { get; init; }
     public string? CallId { get; init; }
     public string? Name { get; init; }
     public Dictionary<string, object?>? Arguments { get; init; }
@@ -133,6 +137,12 @@ public sealed record SessionContent
                 Name ?? string.Empty,
                 Arguments ?? new Dictionary<string, object?>(StringComparer.Ordinal)),
             SessionContentType.FunctionResult => new FunctionResultContent(CallId ?? string.Empty, DeserializeResult()),
+            SessionContentType.Data => new DataContent(
+                DataUri ?? string.Empty,
+                MediaType ?? "application/octet-stream")
+            {
+                Name = Name,
+            },
             _ => new TextContent(Text ?? string.Empty),
         };
 
@@ -163,6 +173,13 @@ public sealed record SessionContent
                 Type = SessionContentType.FunctionResult,
                 CallId = toolResult.CallId,
                 Result = JsonSerializer.SerializeToElement(toolResult.Result),
+            },
+            DataContent data => new SessionContent
+            {
+                Type = SessionContentType.Data,
+                DataUri = data.Uri,
+                MediaType = data.MediaType,
+                Name = data.Name,
             },
             _ => new SessionContent
             {
@@ -231,6 +248,7 @@ public sealed record SessionChatMessage
                 TextReasoningContent reasoning => reasoning.Text,
                 FunctionCallContent toolCall => $"{toolCall.Name}({JsonSerializer.Serialize(toolCall.Arguments)})",
                 FunctionResultContent toolResult => toolResult.Result?.ToString(),
+                DataContent data => data.Name ?? $"[{data.MediaType}]",
                 _ => content.ToString(),
             })
             .Where(static part => !string.IsNullOrWhiteSpace(part))

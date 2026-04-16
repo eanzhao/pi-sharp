@@ -13,6 +13,8 @@ public sealed class CliArgumentsParserTests
                 "openai",
                 "--model",
                 "gpt-4.1-mini",
+                "--otel-endpoint",
+                "http://localhost:4318",
                 "--tools",
                 "read,grep,find",
                 "--thinking",
@@ -28,6 +30,7 @@ public sealed class CliArgumentsParserTests
 
         Assert.Equal("openai", arguments.Provider);
         Assert.Equal("gpt-4.1-mini", arguments.Model);
+        Assert.Equal(new Uri("http://localhost:4318"), arguments.OtelEndpoint);
         Assert.Equal(
             [
                 "read",
@@ -58,5 +61,16 @@ public sealed class CliArgumentsParserTests
             arguments.Diagnostics,
             diagnostic => diagnostic.Severity == CliDiagnosticSeverity.Error &&
                 diagnostic.Message.Contains("--resume cannot be combined with --fork.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Parse_RejectsInvalidOpenTelemetryEndpoint()
+    {
+        var arguments = CliArgumentsParser.Parse(["--otel-endpoint", "not-a-url"]);
+
+        Assert.Contains(
+            arguments.Diagnostics,
+            diagnostic => diagnostic.Severity == CliDiagnosticSeverity.Error &&
+                diagnostic.Message.Contains("not an absolute URL", StringComparison.Ordinal));
     }
 }

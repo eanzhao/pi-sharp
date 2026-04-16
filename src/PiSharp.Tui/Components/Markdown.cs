@@ -75,7 +75,8 @@ public sealed class Markdown : Component
             switch (block)
             {
                 case HeadingBlock heading:
-                    result.AddRange(TextLayout.Wrap($"{new string('#', heading.Level)} {RenderInline(heading.Inline)}", width));
+                    var headingText = RenderInline(heading.Inline);
+                    result.AddRange(TextLayout.Wrap($"\u001b[1;4m{headingText}\u001b[0m", width));
                     result.Add(string.Empty);
                     break;
                 case ParagraphBlock paragraph:
@@ -89,10 +90,10 @@ public sealed class Markdown : Component
                         {
                             if (child is ParagraphBlock itemParagraph)
                             {
-                                var wrapped = TextLayout.Wrap(RenderInline(itemParagraph.Inline), Math.Max(1, width - 2));
+                                var wrapped = TextLayout.Wrap(RenderInline(itemParagraph.Inline), Math.Max(1, width - 4));
                                 for (var index = 0; index < wrapped.Count; index++)
                                 {
-                                    var prefix = index == 0 ? "- " : "  ";
+                                    var prefix = index == 0 ? "  \u2022 " : "    ";
                                     result.Add(prefix + wrapped[index]);
                                 }
                             }
@@ -106,9 +107,9 @@ public sealed class Markdown : Component
                     {
                         if (child is ParagraphBlock quotedParagraph)
                         {
-                            foreach (var line in TextLayout.Wrap(RenderInline(quotedParagraph.Inline), Math.Max(1, width - 2)))
+                            foreach (var line in TextLayout.Wrap(RenderInline(quotedParagraph.Inline), Math.Max(1, width - 4)))
                             {
-                                result.Add($"> {line}");
+                                result.Add($"\u001b[90m\u2502 \u001b[0m{line}");
                             }
                         }
                     }
@@ -116,17 +117,20 @@ public sealed class Markdown : Component
                     result.Add(string.Empty);
                     break;
                 case FencedCodeBlock fencedCode:
-                    result.Add($"```{fencedCode.Info}");
-                    foreach (var line in fencedCode.Lines.Lines)
+                    if (!string.IsNullOrWhiteSpace(fencedCode.Info))
                     {
-                        result.Add($"    {line.ToString()}");
+                        result.Add($"\u001b[90m  [{fencedCode.Info}]\u001b[0m");
                     }
 
-                    result.Add("```");
+                    foreach (var line in fencedCode.Lines.Lines)
+                    {
+                        result.Add($"  \u001b[90m{line}\u001b[0m");
+                    }
+
                     result.Add(string.Empty);
                     break;
                 case ThematicBreakBlock:
-                    result.Add(new string('-', Math.Min(width, 8)));
+                    result.Add($"\u001b[90m{new string('\u2500', Math.Min(width, 40))}\u001b[0m");
                     result.Add(string.Empty);
                     break;
             }
@@ -159,14 +163,15 @@ public sealed class Markdown : Component
                     result.Add(Environment.NewLine);
                     break;
                 case CodeInline code:
-                    result.Add($"`{code.Content}`");
+                    result.Add($"\u001b[36m{code.Content}\u001b[0m");
                     break;
                 case EmphasisInline emphasis:
-                    var marker = emphasis.DelimiterCount >= 2 ? "**" : "*";
-                    result.Add($"{marker}{RenderInline(emphasis)}{marker}");
+                    var style = emphasis.DelimiterCount >= 2 ? "\u001b[1m" : "\u001b[3m";
+                    result.Add($"{style}{RenderInline(emphasis)}\u001b[0m");
                     break;
                 case LinkInline link when !link.IsImage:
-                    result.Add($"[{RenderInline(link)}]({link.Url})");
+                    var linkText = RenderInline(link);
+                    result.Add($"{linkText} \u001b[4;34m{link.Url}\u001b[0m");
                     break;
                 case ContainerInline container:
                     result.Add(RenderInline(container));

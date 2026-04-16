@@ -15,6 +15,9 @@ internal static class MarkdownRenderer
         .Build();
 
     public static MarkupString ToMarkupString(string? markdown)
+        => new(ToHtml(markdown));
+
+    public static string ToHtml(string? markdown)
     {
         var document = Markdown.Parse(markdown ?? string.Empty, Pipeline);
         var writer = new StringWriter();
@@ -25,7 +28,7 @@ internal static class MarkdownRenderer
 
         renderer.Render(document);
         writer.Flush();
-        return new MarkupString(writer.ToString());
+        return writer.ToString();
     }
 
     private sealed class SyntaxHighlightingCodeBlockRenderer : HtmlObjectRenderer<CodeBlock>
