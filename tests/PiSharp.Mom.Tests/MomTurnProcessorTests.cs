@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.Extensions.AI;
 using PiSharp.Ai;
 using PiSharp.CodingAgent;
@@ -42,6 +43,15 @@ public sealed class MomTurnProcessorTests : IDisposable
             static (_, _) => SettingsManager.InMemory(),
             slackClient);
 
+        var store = new MomChannelStore(_workspaceDirectory);
+        await store.LogIncomingEventAsync(new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> summarize this repo",
+            "12345.6789",
+            "app_mention",
+            IsDirectMessage: false));
+
         await processor.ProcessAsync(new SlackIncomingEvent(
             "C123",
             "U123",
@@ -56,7 +66,7 @@ public sealed class MomTurnProcessorTests : IDisposable
         Assert.Equal("*done* <https://example.com|docs>", slackClient.Updates[0].Text);
 
         var request = Assert.Single(chatClient.Requests);
-        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "summarize this repo");
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U123]: summarize this repo");
 
         var sessionDirectory = Path.Combine(_workspaceDirectory, "C123", ".pi-sharp", "sessions");
         Assert.Single(Directory.GetFiles(sessionDirectory, "*.jsonl"));
@@ -66,6 +76,77 @@ public sealed class MomTurnProcessorTests : IDisposable
         Assert.Equal(2, logLines.Length);
         Assert.Contains("summarize this repo", logLines[0]);
         Assert.Contains("done", logLines[1]);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_IncludesDownloadedAttachmentsInPromptAndLog()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("processed"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        using var httpClient = new HttpClient(new StubHttpMessageHandler(static _ =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("notes body"),
+            }));
+
+        using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
+        var processor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+
+        var incomingEvent = new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> review the attachment",
+            "12345.6789",
+            "app_mention",
+            IsDirectMessage: false,
+            Files:
+            [
+                new SlackFileReference("notes.txt", "https://example.com/notes.txt"),
+            ]);
+
+        await store.LogIncomingEventAsync(incomingEvent);
+        await processor.ProcessAsync(incomingEvent);
+
+        var request = Assert.Single(chatClient.Requests);
+        Assert.Contains(request, message =>
+            message.Role == ChatRole.User &&
+            message.Text is not null &&
+            message.Text.Contains("[U123]: review the attachment", StringComparison.Ordinal) &&
+            message.Text.Contains("notes.txt => attachments/12345678_notes.txt", StringComparison.Ordinal));
+
+        var attachmentPath = Path.Combine(_workspaceDirectory, "C123", "attachments", "12345678_notes.txt");
+        Assert.True(File.Exists(attachmentPath));
+        Assert.Equal("notes body", await File.ReadAllTextAsync(attachmentPath));
+
+        var logLines = File.ReadAllLines(Path.Combine(_workspaceDirectory, "C123", "log.jsonl"));
+        Assert.Contains("\"original\":\"notes.txt\"", logLines[0]);
+        Assert.Contains("\"local\":\"attachments/12345678_notes.txt\"", logLines[0]);
     }
 
     [Fact]
@@ -193,5 +274,11 @@ public sealed class MomTurnProcessorTests : IDisposable
         {
             Directory.Delete(_workspaceDirectory, recursive: true);
         }
+    }
+
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> createResponse) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(createResponse(request));
     }
 }

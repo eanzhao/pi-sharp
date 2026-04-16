@@ -1,0 +1,205 @@
+using System.Net;
+using Microsoft.Extensions.AI;
+using PiSharp.Ai;
+using PiSharp.CodingAgent;
+using PiSharp.Mom;
+using PiSharp.Mom.Tests.Support;
+
+namespace PiSharp.Mom.Tests;
+
+public sealed class MomWorkspaceRuntimeTests : IDisposable
+{
+    private readonly string _workspaceDirectory = Path.Combine(Path.GetTempPath(), $"pisharp-mom-runtime-{Guid.NewGuid():N}");
+
+    [Fact]
+    public async Task DispatchAsync_LogsChannelChatterAndSyncsItIntoNextTurn()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("ack"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        var store = new MomChannelStore(_workspaceDirectory);
+        var turnProcessor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+        var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient, store);
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U234",
+            "Earlier channel message",
+            "12345.1000",
+            "message",
+            IsDirectMessage: false,
+            RequiresResponse: false));
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> summarize the channel",
+            "12345.2000",
+            "app_mention",
+            IsDirectMessage: false));
+
+        await runtime.WaitForIdleAsync("C123");
+
+        Assert.Single(chatClient.Requests);
+        var request = chatClient.Requests[0];
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U234]: Earlier channel message");
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U123]: summarize the channel");
+
+        var logLines = File.ReadAllLines(Path.Combine(_workspaceDirectory, "C123", "log.jsonl"));
+        Assert.Equal(3, logLines.Length);
+        Assert.Contains("Earlier channel message", logLines[0]);
+        Assert.Contains("summarize the channel", logLines[1]);
+        Assert.Contains("ack", logLines[2]);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_SyncsLoggedAttachmentsIntoNextTurn()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("ack"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        using var httpClient = new HttpClient(new StubHttpMessageHandler(static _ =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("attachment body"),
+            }));
+
+        using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
+        var turnProcessor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+        var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient, store);
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U234",
+            string.Empty,
+            "12345.1000",
+            "message",
+            IsDirectMessage: false,
+            Files:
+            [
+                new SlackFileReference("notes.txt", "https://example.com/notes.txt"),
+            ],
+            RequiresResponse: false));
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> summarize attachments",
+            "12345.2000",
+            "app_mention",
+            IsDirectMessage: false));
+
+        await runtime.WaitForIdleAsync("C123");
+
+        Assert.Single(chatClient.Requests);
+        var request = chatClient.Requests[0];
+        Assert.Contains(request, message =>
+            message.Role == ChatRole.User &&
+            message.Text is not null &&
+            message.Text.Contains("[U234]: shared attachments", StringComparison.Ordinal) &&
+            message.Text.Contains("notes.txt => attachments/12345100_notes.txt", StringComparison.Ordinal));
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U123]: summarize attachments");
+
+        var attachmentPath = Path.Combine(_workspaceDirectory, "C123", "attachments", "12345100_notes.txt");
+        Assert.True(File.Exists(attachmentPath));
+    }
+
+    private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>
+        new(
+        [
+            new CodingAgentProviderFactory
+            {
+                Configuration = new ProviderConfiguration(
+                    ProviderId.OpenAi,
+                    ApiId.OpenAi,
+                    "OpenAI",
+                    DefaultModelId: "gpt-4.1-mini",
+                    ApiKeyEnvironmentVariable: "OPENAI_API_KEY"),
+                KnownModels =
+                [
+                    new ModelMetadata(
+                        "gpt-4.1-mini",
+                        "GPT-4.1 mini",
+                        ApiId.OpenAi,
+                        ProviderId.OpenAi,
+                        1_000_000,
+                        32_768,
+                        ModelCapability.TextInput | ModelCapability.Streaming | ModelCapability.ToolCalling,
+                        ModelPricing.Free),
+                ],
+                CreateChatClient = (_, _) => chatClient,
+            },
+        ]);
+
+    private static ChatResponseUpdate CreateUpdate(
+        AIContent content,
+        ChatFinishReason? finishReason = null) =>
+        new(ChatRole.Assistant, [content])
+        {
+            FinishReason = finishReason,
+        };
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_workspaceDirectory))
+        {
+            Directory.Delete(_workspaceDirectory, recursive: true);
+        }
+    }
+
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> createResponse) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(createResponse(request));
+    }
+}

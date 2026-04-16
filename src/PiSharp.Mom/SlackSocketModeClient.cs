@@ -114,9 +114,14 @@ public sealed class SlackSocketModeClient
             return false;
         }
 
-        if (eventElement.TryGetProperty("subtype", out var subtype) && subtype.ValueKind != JsonValueKind.Null)
+        var isFileShare = false;
+        if (eventElement.TryGetProperty("subtype", out var subtype) && subtype.ValueKind == JsonValueKind.String)
         {
-            return false;
+            isFileShare = string.Equals(subtype.GetString(), "file_share", StringComparison.OrdinalIgnoreCase);
+            if (!isFileShare)
+            {
+                return false;
+            }
         }
 
         if (!TryGetString(eventElement, "user", out var userId) ||
@@ -128,11 +133,25 @@ public sealed class SlackSocketModeClient
         }
 
         var isDirectMessage = channelId.StartsWith('D');
-        var isRelevant =
+        var text = TryGetString(eventElement, "text", out var parsedText) ? parsedText : string.Empty;
+        var files = GetFiles(eventElement);
+        if (string.IsNullOrWhiteSpace(text) && files.Count == 0)
+        {
+            return false;
+        }
+
+        if (string.Equals(eventType, "message", StringComparison.OrdinalIgnoreCase) &&
+            !isDirectMessage &&
+            text.Contains($"<@{botUserId}>", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var requiresResponse =
             string.Equals(eventType, "app_mention", StringComparison.OrdinalIgnoreCase) ||
             (string.Equals(eventType, "message", StringComparison.OrdinalIgnoreCase) && isDirectMessage);
 
-        if (!isRelevant)
+        if (!requiresResponse && !string.Equals(eventType, "message", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -140,10 +159,12 @@ public sealed class SlackSocketModeClient
         incomingEvent = new SlackIncomingEvent(
             channelId,
             userId,
-            TryGetString(eventElement, "text", out var text) ? text : string.Empty,
+            text,
             timestamp,
             eventType,
-            isDirectMessage);
+            isDirectMessage,
+            files,
+            RequiresResponse: requiresResponse);
 
         return true;
     }
@@ -172,5 +193,28 @@ public sealed class SlackSocketModeClient
 
         value = string.Empty;
         return false;
+    }
+
+    private static IReadOnlyList<SlackFileReference> GetFiles(JsonElement eventElement)
+    {
+        if (!eventElement.TryGetProperty("files", out var filesElement) || filesElement.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<SlackFileReference>();
+        }
+
+        var files = new List<SlackFileReference>();
+        foreach (var fileElement in filesElement.EnumerateArray())
+        {
+            if (!TryGetString(fileElement, "name", out var name))
+            {
+                continue;
+            }
+
+            TryGetString(fileElement, "url_private_download", out var privateDownloadUrl);
+            TryGetString(fileElement, "url_private", out var privateUrl);
+            files.Add(new SlackFileReference(name, privateDownloadUrl, privateUrl));
+        }
+
+        return files;
     }
 }

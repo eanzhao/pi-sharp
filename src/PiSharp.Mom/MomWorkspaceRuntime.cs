@@ -7,21 +7,35 @@ public sealed class MomWorkspaceRuntime
     private readonly ConcurrentDictionary<string, ChannelState> _channelStates = new(StringComparer.Ordinal);
     private readonly ISlackMessagingClient _slackClient;
     private readonly MomTurnProcessor _turnProcessor;
+    private readonly MomChannelStore _store;
 
     public MomWorkspaceRuntime(
         MomTurnProcessor turnProcessor,
-        ISlackMessagingClient slackClient)
+        ISlackMessagingClient slackClient,
+        MomChannelStore store)
     {
         _turnProcessor = turnProcessor ?? throw new ArgumentNullException(nameof(turnProcessor));
         _slackClient = slackClient ?? throw new ArgumentNullException(nameof(slackClient));
+        _store = store ?? throw new ArgumentNullException(nameof(store));
     }
 
-    public Task DispatchAsync(SlackIncomingEvent incomingEvent, CancellationToken cancellationToken = default)
+    public async Task DispatchAsync(SlackIncomingEvent incomingEvent, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(incomingEvent);
 
+        if (incomingEvent.ShouldLogToChannelLog)
+        {
+            await _store.LogIncomingEventAsync(incomingEvent, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!incomingEvent.RequiresResponse)
+        {
+            return;
+        }
+
         var normalizedPrompt = MomTurnProcessor.NormalizePrompt(incomingEvent);
         var state = _channelStates.GetOrAdd(incomingEvent.ChannelId, static _ => new ChannelState());
+        var shouldNotifyBusy = false;
 
         if (string.Equals(normalizedPrompt, "stop", StringComparison.OrdinalIgnoreCase))
         {
@@ -33,14 +47,20 @@ public sealed class MomWorkspaceRuntime
 
             if (cancellationTokenSource is null)
             {
-                return Task.CompletedTask;
+                await _slackClient.PostMessageAsync(
+                        incomingEvent.ChannelId,
+                        "_Nothing running._",
+                        cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                return;
             }
 
             cancellationTokenSource.Cancel();
-            return _slackClient.PostMessageAsync(
+            await _slackClient.PostMessageAsync(
                 incomingEvent.ChannelId,
                 "_Stop requested._",
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return;
         }
 
         lock (state.SyncRoot)
@@ -51,24 +71,30 @@ public sealed class MomWorkspaceRuntime
                 {
                     if (state.PendingEvents.Count >= MomDefaults.MaxQueuedEventsPerChannel)
                     {
-                        return Task.CompletedTask;
+                        return;
                     }
 
                     state.PendingEvents.Enqueue(incomingEvent);
-                    return Task.CompletedTask;
+                    return;
                 }
 
-                return _slackClient.PostMessageAsync(
-                    incomingEvent.ChannelId,
-                    "_Already working. Send `stop` to cancel._",
-                    cancellationToken: cancellationToken);
+                shouldNotifyBusy = true;
             }
-
-            state.CancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            state.ActiveTask = RunChannelTurnAsync(state, incomingEvent);
+            else
+            {
+                state.CancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                state.ActiveTask = RunChannelTurnAsync(state, incomingEvent);
+            }
         }
 
-        return Task.CompletedTask;
+        if (shouldNotifyBusy)
+        {
+            await _slackClient.PostMessageAsync(
+                    incomingEvent.ChannelId,
+                    "_Already working. Send `stop` to cancel._",
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 
     public Task WaitForIdleAsync(string channelId)

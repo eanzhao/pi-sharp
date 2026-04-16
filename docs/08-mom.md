@@ -4,14 +4,15 @@
 
 Phase 08 实现 `PiSharp.Mom` 的最小可用 Slack bot runtime，把 pi-mono `mom` 里最核心的闭环先接起来：
 
-1. Slack Socket Mode 收事件、ack envelope、处理 `@mention` 和 DM
+1. Slack Socket Mode 收事件、ack envelope、处理 `@mention`、DM 和普通 channel chatter 日志
 2. 每个 channel/DM 一个独立 workspace 目录
 3. 每个 channel/DM 一个持久化 `SessionManager` 会话
 4. 直接复用 `PiSharp.CodingAgent` 的工具与 Agent runtime 回答 Slack 消息
 5. `workspace/events/*.json` 触发 immediate / one-shot / periodic synthetic turn
 6. `PiSharp.Cli` 通过 `mom` 命名空间转发到 `PiSharp.Mom`
+7. Slack 附件下载到 `attachments/`，并把本地路径同步进 agent context
 
-这一阶段明确是“最小可跑”而不是一次性追平 TS 版全部能力。现在已经能跑真实 Slack bot 主链路，但刻意把附件下载、事件调度、Docker sandbox 和 thread 级工具详情留到后续。
+这一阶段明确是“最小可跑”而不是一次性追平 TS 版全部能力。现在已经能跑真实 Slack bot 主链路，也会把 Slack 附件下载到 channel workspace 并把本地路径带进上下文；但事件调度增强、Docker sandbox 和 thread 级工具详情仍然留到后续。
 
 ## 参考实现
 
@@ -28,6 +29,7 @@ Phase 08 实现 `PiSharp.Mom` 的最小可用 Slack bot runtime，把 pi-mono `m
 - `SlackWebApiClient`
 - `SlackSocketModeClient`
 - `MomChannelStore`
+- `MomSessionSync`
 - `MomSystemPrompt`
 - `MomTurnProcessor`
 - `MomWorkspaceRuntime`
@@ -71,10 +73,11 @@ TS 版 `mom` 把 Slack、queue、context、agent orchestration 写在一起。C#
 `MomTurnProcessor` 每次处理 Slack 消息时会：
 
 1. 找到当前 channel 最新 session
-2. 用 `CodingAgentRuntimeBootstrap` 解析 provider / model / api key
-3. 构建 Slack 专用 system prompt
-4. 用 `CodingAgentSession.CreateAsync()` 复原上下文并执行这次 prompt
-5. 把新增消息 append 回 `SessionManager`
+2. 用 `MomSessionSync` 把 `log.jsonl` 里尚未进入 session 的普通用户消息同步进 `SessionManager`
+3. 用 `CodingAgentRuntimeBootstrap` 解析 provider / model / api key
+4. 构建 Slack 专用 system prompt
+5. 用 `CodingAgentSession.CreateAsync()` 复原上下文并执行这次 prompt
+6. 把新增消息 append 回 `SessionManager`
 
 这意味着 `PiSharp.Mom` 天然继承了：
 
@@ -83,9 +86,39 @@ TS 版 `mom` 把 Slack、queue、context、agent orchestration 写在一起。C#
 - 已有的 Agent tool-calling/runtime
 - 已有的 session JSONL 格式
 
-本阶段没有再额外实现 `attach`、threaded tool logs、custom skill loader 等 mom 特有增强，而是优先把复用路径打通。
+本阶段没有再额外实现 `attach` 上传工具、threaded tool logs、custom skill loader 等 mom 特有增强，而是优先把复用路径打通。
 
-### 4. Slack 响应策略先保持简单
+### 4. 普通 channel chatter 先写 log，再在下次 turn 前同步进 session
+
+TS 版 mom 的关键行为不是“只看触发它的那条消息”，而是：
+
+- 在 bot 所在 channel 里把普通用户消息先写到 `log.jsonl`
+- 真正被 @mention 时，再把这些未处理消息同步进 agent 上下文
+
+C# 版现在也按这个模型工作：
+
+- `SlackSocketModeClient` 会把普通 `message` 事件解析成 `RequiresResponse = false`
+- `MomWorkspaceRuntime` 先统一写 `log.jsonl`
+- 下一次真正触发 turn 时，`MomSessionSync` 会把缺失的用户消息 append 进 `SessionManager`
+
+这样一来，mom 在 channel 中被唤醒时，不再只知道“最后一句 @mention”，而是能看到从上次运行后累积下来的 chatter。
+
+### 5. Slack 附件先下载到本地，再把路径喂给 agent
+
+TS 版 mom 会把用户上传的文件落到 workspace，再让 agent 用路径处理。C# 版这一步现在也补上了：
+
+- `SlackSocketModeClient` 会接受 `file_share` 消息和带 `files` 的 mention / DM
+- `MomChannelStore` 会把附件下载到 `<channel>/attachments/`
+- `log.jsonl` 记录原始文件名和本地相对路径
+- 当前 turn 和后续 `MomSessionSync` 都会把这些路径渲染到 `<slack_attachments>` block
+
+这意味着 agent 至少已经能用现有的 `read` / `bash` 工具处理文本类附件或进一步操作本地文件。和 TS 版相比，目前还没有：
+
+- 把图片附件直接作为 multimodal image content 送进模型
+- `attach` / `uploadFile` 这类“把本地文件再发回 Slack”的工具封装
+- 后台 backfill 附件补抓取
+
+### 6. Slack 响应策略先保持简单
 
 当前响应链路刻意保持最小：
 
@@ -102,7 +135,7 @@ TS 版 `mom` 把 Slack、queue、context、agent orchestration 写在一起。C#
 
 原因很简单：phase 08 先保证“能稳定回答 Slack 消息”，再迭代更复杂的交互表现。
 
-### 5. 先只支持 host execution
+### 7. 先只支持 host execution
 
 pi-mono `mom` 的重要特性是 Docker sandbox。C# 版这一步没有跟进 sandbox executor，而是先直接使用 `CodingAgentSession` 的现有 built-in tools，也就是 host 上的：
 
@@ -124,7 +157,7 @@ pi-mono `mom` 的重要特性是 Docker sandbox。C# 版这一步没有跟进 sa
 
 因此文档和实现都把这点当作显式 tradeoff，而不是隐藏行为。
 
-### 6. events watcher 走本地文件系统，而不是额外服务
+### 8. events watcher 走本地文件系统，而不是额外服务
 
 参考 TS 版 `events.ts`，C# 版补了 `MomEventsWatcher`：
 
@@ -150,14 +183,14 @@ pi-mono `mom` 的重要特性是 Docker sandbox。C# 版这一步没有跟进 sa
 | `main.ts` | `MomApplication` + `MomWorkspaceRuntime` |
 | `slack.ts` | `SlackWebApiClient` + `SlackSocketModeClient` |
 | `store.ts` | `MomChannelStore` |
+| `context.ts` | `MomSessionSync` |
 | `events.ts` | `MomEventsWatcher` |
 | `agent.ts` | `MomTurnProcessor` + `MomSystemPrompt` |
 | `pi agent` 复用路径 | `CodingAgentRuntimeBootstrap` + `CodingAgentSession` |
 
 ## 当前取舍
 
-- 只处理 `app_mention` 和 DM，不记录普通 channel chatter
-- 还没有附件下载与 `attach` 工具
+- 已经支持附件下载到 `attachments/`，但还没有 `attach` / 上传回 Slack 工具
 - 还没有 Docker sandbox，工具运行在 host
 - 还没有 thread 级工具详情或 streaming UI，只保留单消息占位再覆盖
 - 没有单独实现 workspace settings / auth schema，先复用现有 `SettingsManager` / provider bootstrap
@@ -169,9 +202,10 @@ pi-mono `mom` 的重要特性是 Docker sandbox。C# 版这一步没有跟进 sa
 测试覆盖：
 
 - `MomApplication` 的参数解析和 namespaced help
-- `SlackSocketModeClient` 对 mention / DM / bot-self event 的解析
+- `SlackSocketModeClient` 对 mention / DM / 普通 message / `file_share` / bot-self event 的解析
 - `SlackMrkdwnFormatter` 的 Markdown → mrkdwn 基础转换
-- `MomTurnProcessor` 的 prompt 归一化、`[SILENT]`、Slack 回复、`log.jsonl` 落盘、session 持久化
+- `MomTurnProcessor` 的 prompt 归一化、附件路径注入、`[SILENT]`、Slack 回复、`log.jsonl` 落盘、session 持久化
+- `MomWorkspaceRuntime` 的普通 channel chatter / 附件记录与下一次 turn 同步
 - `MomEventsWatcher` 的 immediate 触发和过期 one-shot 清理
 - `PiSharp.Cli` 到 `PiSharp.Mom` 的 `mom` 命名空间转发
 

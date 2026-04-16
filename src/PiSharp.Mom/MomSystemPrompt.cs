@@ -22,6 +22,7 @@ public static class MomSystemPrompt
         var currentTime = options.CurrentTime ?? DateTimeOffset.UtcNow;
         var workspaceDirectory = Normalize(options.WorkspaceDirectory);
         var channelDirectory = Normalize(options.ChannelDirectory);
+        var attachmentsDirectory = Normalize(Path.Combine(options.ChannelDirectory, "attachments"));
         var scratchDirectory = Normalize(Path.Combine(options.ChannelDirectory, MomDefaults.ScratchDirectoryName));
         var eventsDirectory = Normalize(Path.Combine(options.WorkspaceDirectory, MomDefaults.EventsDirectoryName));
         var immediateExample = $"{{\"type\":\"immediate\",\"channelId\":\"{options.ChannelId}\",\"text\":\"New activity detected\"}}";
@@ -43,6 +44,7 @@ Workspace layout:
 - Workspace root: {workspaceDirectory}
 - Current channel: {options.ChannelId}
 - Channel directory: {channelDirectory}
+- Attachments directory for user-shared files: {attachmentsDirectory}
 - Scratch directory for temporary work: {scratchDirectory}
 - Full conversation log: {Normalize(Path.Combine(options.ChannelDirectory, MomDefaults.LogFileName))}
 - Shared memory: {Normalize(Path.Combine(options.WorkspaceDirectory, MomDefaults.MemoryFileName))}

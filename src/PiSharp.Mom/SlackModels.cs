@@ -1,5 +1,10 @@
 namespace PiSharp.Mom;
 
+public sealed record SlackFileReference(
+    string Name,
+    string? PrivateDownloadUrl = null,
+    string? PrivateUrl = null);
+
 public sealed record SlackIncomingEvent(
     string ChannelId,
     string UserId,
@@ -7,8 +12,11 @@ public sealed record SlackIncomingEvent(
     string Timestamp,
     string EventType,
     bool IsDirectMessage,
+    IReadOnlyList<SlackFileReference>? Files = null,
     bool QueueIfBusy = false,
-    string? StatusText = null);
+    string? StatusText = null,
+    bool RequiresResponse = true,
+    bool ShouldLogToChannelLog = true);
 
 public sealed record SlackAuthInfo(string UserId);
 

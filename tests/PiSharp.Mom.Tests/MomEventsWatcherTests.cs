@@ -37,6 +37,7 @@ public sealed class MomEventsWatcherTests : IDisposable
             """);
 
         await WaitAsync(completion.Task);
+        await WaitUntilAsync(static state => !File.Exists((string)state!), filePath);
 
         Assert.NotNull(received);
         Assert.Equal("C123", received!.ChannelId);
@@ -89,6 +90,16 @@ public sealed class MomEventsWatcherTests : IDisposable
         }
 
         await task;
+    }
+
+    private static async Task WaitUntilAsync(Func<object?, bool> predicate, object? state)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!predicate(state))
+        {
+            timeout.Token.ThrowIfCancellationRequested();
+            await Task.Delay(50, timeout.Token);
+        }
     }
 
     public void Dispose()

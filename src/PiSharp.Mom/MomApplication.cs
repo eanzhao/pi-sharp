@@ -149,15 +149,17 @@ Examples:
             Model = options.Model,
             ApiKey = options.ApiKey,
         };
+        using var store = new MomChannelStore(workspaceDirectory, slackBotToken);
 
         var turnProcessor = new MomTurnProcessor(
             _environment,
             runtimeOptions,
             _providerCatalog,
             _createSettingsManager,
-            slackClient);
+            slackClient,
+            store);
 
-        var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient);
+        var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient, store);
         var socketModeClient = new SlackSocketModeClient(slackClient, slackAppToken);
         using var eventsWatcher = new MomEventsWatcher(workspaceDirectory, runtime.DispatchAsync);
         eventsWatcher.Start(cancellationToken);

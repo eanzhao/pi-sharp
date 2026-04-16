@@ -17,21 +17,22 @@ public sealed class MomTurnProcessor
         MomRuntimeOptions options,
         CodingAgentProviderCatalog providerCatalog,
         Func<string, string, SettingsManager> createSettingsManager,
-        ISlackMessagingClient slackClient)
+        ISlackMessagingClient slackClient,
+        MomChannelStore? store = null)
     {
         _environment = environment ?? throw new ArgumentNullException(nameof(environment));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _providerCatalog = providerCatalog ?? throw new ArgumentNullException(nameof(providerCatalog));
         _createSettingsManager = createSettingsManager ?? throw new ArgumentNullException(nameof(createSettingsManager));
         _slackClient = slackClient ?? throw new ArgumentNullException(nameof(slackClient));
-        _store = new MomChannelStore(options.WorkspaceDirectory);
+        _store = store ?? new MomChannelStore(options.WorkspaceDirectory);
     }
 
     public async Task ProcessAsync(SlackIncomingEvent incomingEvent, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(incomingEvent);
 
-        var prompt = NormalizePrompt(incomingEvent);
+        var prompt = CreatePrompt(incomingEvent);
         if (string.IsNullOrWhiteSpace(prompt))
         {
             await _slackClient.PostMessageAsync(
@@ -44,18 +45,6 @@ public sealed class MomTurnProcessor
 
         var channelDirectory = _store.GetChannelDirectory(incomingEvent.ChannelId);
         var sessionDirectory = _store.GetSessionDirectory(incomingEvent.ChannelId);
-
-        await _store.LogMessageAsync(
-                incomingEvent.ChannelId,
-                new MomLoggedMessage
-                {
-                    Ts = incomingEvent.Timestamp,
-                    User = incomingEvent.UserId,
-                    Text = prompt,
-                    IsBot = false,
-                },
-                cancellationToken)
-            .ConfigureAwait(false);
 
         var placeholderTs = await _slackClient.PostMessageAsync(
                 incomingEvent.ChannelId,
@@ -71,12 +60,19 @@ public sealed class MomTurnProcessor
             var persistenceManager = new SessionManager(sessionDirectory, channelDirectory);
 
             SessionContext? existingSession = null;
+            IReadOnlyList<ChatMessage> synchronizedLogMessages = Array.Empty<ChatMessage>();
             var latestSession = persistenceManager.FindLatestSessionFile();
             if (latestSession is not null)
             {
                 await persistenceManager.LoadSessionAsync(latestSession, cancellationToken).ConfigureAwait(false);
-                existingSession = persistenceManager.BuildContext();
             }
+
+            synchronizedLogMessages = MomSessionSync.SyncLogToSessionManager(
+                persistenceManager,
+                _store.GetLogFilePath(incomingEvent.ChannelId),
+                incomingEvent.Timestamp);
+
+            existingSession = persistenceManager.BuildContext();
 
             var runConfiguration = bootstrap.Resolve(
                 new CodingAgentBootstrapRequest
@@ -120,7 +116,8 @@ public sealed class MomTurnProcessor
                 persistenceManager,
                 latestSession is not null,
                 session,
-                runConfiguration);
+                runConfiguration,
+                synchronizedLogMessages);
 
             var persistedMessageCount = session.State.Messages.Count;
             await session.PromptAsync(prompt, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -198,11 +195,40 @@ public sealed class MomTurnProcessor
         return text;
     }
 
+    private string CreatePrompt(SlackIncomingEvent incomingEvent)
+    {
+        var normalizedPrompt = NormalizePrompt(incomingEvent);
+        var loggedMessage = _store.ReadLoggedMessage(incomingEvent.ChannelId, incomingEvent.Timestamp);
+        if (loggedMessage is not null &&
+            (!string.IsNullOrWhiteSpace(loggedMessage.Text) || loggedMessage.Attachments.Count > 0))
+        {
+            return MomSessionSync.FormatForContext(loggedMessage);
+        }
+
+        if (incomingEvent.Files is { Count: > 0 })
+        {
+            return MomSessionSync.FormatForContext(
+                new MomLoggedMessage
+                {
+                    Ts = incomingEvent.Timestamp,
+                    User = incomingEvent.UserId,
+                    Text = normalizedPrompt,
+                    Attachments = incomingEvent.Files
+                        .Select(static file => new MomLoggedAttachment(file.Name))
+                        .ToArray(),
+                    IsBot = false,
+                });
+        }
+
+        return normalizedPrompt;
+    }
+
     private static void PreparePersistenceManager(
         SessionManager persistenceManager,
         bool hasExistingSession,
         CodingAgentSession session,
-        CodingAgentRunConfiguration runConfiguration)
+        CodingAgentRunConfiguration runConfiguration,
+        IReadOnlyList<ChatMessage> synchronizedLogMessages)
     {
         if (hasExistingSession)
         {
@@ -224,6 +250,11 @@ public sealed class MomTurnProcessor
             thinkingLevel: runConfiguration.ThinkingLevel.ToString().ToLowerInvariant(),
             systemPrompt: session.SystemPrompt,
             toolNames: session.ActiveToolNames);
+
+        foreach (var synchronizedMessage in synchronizedLogMessages)
+        {
+            persistenceManager.AppendEntry(SessionMessageEntry.FromChatMessage(synchronizedMessage));
+        }
     }
 
     private static void PersistNewMessages(
