@@ -73,6 +73,10 @@ public static class CodingAgentTools
                 runtime.LsAsync,
                 name: BuiltInToolNames.Ls,
                 description: "List directory contents from the working directory."),
+            [BuiltInToolNames.EditDiff] = AgentTool.Create(
+                runtime.EditDiffAsync,
+                name: BuiltInToolNames.EditDiff,
+                description: "Apply a unified diff patch to an existing file in the working directory."),
         };
     }
 
@@ -111,6 +115,16 @@ public static class CodingAgentTools
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
+        private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+        };
+
+        private static readonly HashSet<string> PdfExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".pdf",
+        };
+
         public async Task<string> ReadAsync(
             string path,
             int? offset = null,
@@ -121,6 +135,26 @@ public static class CodingAgentTools
 
             var fullPath = scope.ResolvePath(path);
             EnsureFileExists(fullPath, path);
+
+            var extension = Path.GetExtension(fullPath);
+            if (ImageExtensions.Contains(extension))
+            {
+                var fileInfo = new FileInfo(fullPath);
+                return $"Image file detected: {scope.ToDisplayPath(fullPath)} ({fileInfo.Length} bytes). Use the file path in your response to reference it.";
+            }
+
+            if (PdfExtensions.Contains(extension))
+            {
+                var fileInfo = new FileInfo(fullPath);
+                return $"PDF file detected: {scope.ToDisplayPath(fullPath)} ({fileInfo.Length} bytes). PDF text extraction not yet available.";
+            }
+
+            var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+            if (!CanDecodeUtf8(bytes))
+            {
+                var fileInfo = new FileInfo(fullPath);
+                return $"Binary file detected: {scope.ToDisplayPath(fullPath)} ({fileInfo.Length} bytes). Cannot display binary content.";
+            }
 
             var content = await File.ReadAllTextAsync(fullPath, cancellationToken).ConfigureAwait(false);
             var normalizedContent = NormalizeLineEndings(content);
@@ -249,6 +283,24 @@ public static class CodingAgentTools
                 : $"Updated {scope.ToDisplayPath(fullPath)}.";
         }
 
+        public async Task<string> EditDiffAsync(
+            string path,
+            string diff,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            ArgumentException.ThrowIfNullOrWhiteSpace(diff);
+
+            var fullPath = scope.ResolvePath(path);
+            EnsureFileExists(fullPath, path);
+
+            var content = await File.ReadAllTextAsync(fullPath, cancellationToken).ConfigureAwait(false);
+            var updatedContent = UnifiedDiffApplier.Apply(content, diff);
+            await File.WriteAllTextAsync(fullPath, updatedContent, cancellationToken).ConfigureAwait(false);
+
+            return $"Applied diff to {scope.ToDisplayPath(fullPath)}.";
+        }
+
         public async Task<string> BashAsync(
             string command,
             int? timeoutMs = null,
@@ -290,11 +342,11 @@ public static class CodingAgentTools
                 throw new ArgumentOutOfRangeException(nameof(limit), "limit must be greater than or equal to 1.");
             }
 
-            var entries = Directory.EnumerateFileSystemEntries(targetPath)
-                .Select(fullPath =>
+            var entries = scope.EnumerateDirectoryEntries(targetPath)
+                .Select(entry =>
                 {
-                    var name = Path.GetFileName(fullPath);
-                    if (Directory.Exists(fullPath))
+                    var name = Path.GetFileName(entry.Path);
+                    if (entry.IsDirectory)
                     {
                         name += "/";
                     }
@@ -454,6 +506,19 @@ public static class CodingAgentTools
         private static string NormalizeLineEndings(string text) =>
             text.Replace("\r\n", "\n", PathComparison).Replace('\r', '\n');
 
+        private static bool CanDecodeUtf8(byte[] bytes)
+        {
+            try
+            {
+                _ = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetString(bytes);
+                return true;
+            }
+            catch (DecoderFallbackException)
+            {
+                return false;
+            }
+        }
+
         private static int CountLines(string text) =>
             string.IsNullOrEmpty(text)
                 ? 0
@@ -524,11 +589,14 @@ public static class CodingAgentTools
             "obj",
         };
 
+        private readonly Lazy<GitIgnoreFilter> _gitIgnoreFilter;
+
         public WorkingDirectoryScope(string workingDirectory)
         {
             RootPath = Path.GetFullPath(string.IsNullOrWhiteSpace(workingDirectory)
                 ? Directory.GetCurrentDirectory()
                 : workingDirectory);
+            _gitIgnoreFilter = new Lazy<GitIgnoreFilter>(() => new GitIgnoreFilter(RootPath));
         }
 
         public string RootPath { get; }
@@ -569,32 +637,51 @@ public static class CodingAgentTools
             while (pending.Count > 0)
             {
                 var currentPath = pending.Pop();
-                foreach (var childPath in Directory.EnumerateFileSystemEntries(currentPath))
+                foreach (var entry in EnumerateDirectoryEntries(currentPath))
                 {
-                    var name = Path.GetFileName(childPath);
-                    var isDirectory = Directory.Exists(childPath);
+                    yield return entry;
 
-                    yield return new FileSystemEntry(childPath, isDirectory);
-
-                    if (!isDirectory)
+                    if (!entry.IsDirectory)
                     {
                         continue;
                     }
 
-                    if (IgnoredDirectoryNames.Contains(name))
-                    {
-                        continue;
-                    }
-
-                    if (TryGetAttributes(childPath, out var attributes) &&
+                    if (TryGetAttributes(entry.Path, out var attributes) &&
                         attributes.HasFlag(FileAttributes.ReparsePoint))
                     {
                         continue;
                     }
 
-                    pending.Push(childPath);
+                    pending.Push(entry.Path);
                 }
             }
+        }
+
+        public IEnumerable<FileSystemEntry> EnumerateDirectoryEntries(string directoryPath)
+        {
+            foreach (var childPath in Directory.EnumerateFileSystemEntries(directoryPath))
+            {
+                var isDirectory = Directory.Exists(childPath);
+                if (ShouldSkip(childPath, isDirectory))
+                {
+                    continue;
+                }
+
+                yield return new FileSystemEntry(childPath, isDirectory);
+            }
+        }
+
+        private bool ShouldSkip(string path, bool isDirectory)
+        {
+            var name = Path.GetFileName(path);
+            if (isDirectory && IgnoredDirectoryNames.Contains(name))
+            {
+                return true;
+            }
+
+            var displayPath = ToDisplayPath(path);
+            return displayPath != "." &&
+                _gitIgnoreFilter.Value.IsIgnored(isDirectory ? displayPath + "/" : displayPath);
         }
 
         private static bool TryGetAttributes(string path, out FileAttributes attributes)

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace PiSharp.CodingAgent;
 
@@ -14,6 +15,8 @@ public sealed class SettingsManager
     private CodingAgentSettings _globalSettings;
     private CodingAgentSettings _projectSettings;
     private CodingAgentSettings _merged;
+    private readonly HashSet<string> _modifiedGlobalFields = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _modifiedProjectFields = new(StringComparer.Ordinal);
 
     private SettingsManager(
         CodingAgentSettings globalSettings,
@@ -35,6 +38,9 @@ public sealed class SettingsManager
     public CodingAgentSettings GlobalSettings => _globalSettings;
     public CodingAgentSettings ProjectSettings => _projectSettings;
 
+    public IReadOnlySet<string> ModifiedGlobalFields => _modifiedGlobalFields;
+    public IReadOnlySet<string> ModifiedProjectFields => _modifiedProjectFields;
+
     public static SettingsManager Create(string cwd, string agentDir)
     {
         var globalPath = Path.Combine(agentDir, "settings.json");
@@ -51,13 +57,17 @@ public sealed class SettingsManager
 
     public void UpdateGlobal(Func<CodingAgentSettings, CodingAgentSettings> transform)
     {
+        var previous = _globalSettings;
         _globalSettings = transform(_globalSettings);
+        TrackChanges(previous, _globalSettings, _modifiedGlobalFields);
         _merged = CodingAgentSettings.Default.MergeWith(_globalSettings).MergeWith(_projectSettings);
     }
 
     public void UpdateProject(Func<CodingAgentSettings, CodingAgentSettings> transform)
     {
+        var previous = _projectSettings;
         _projectSettings = transform(_projectSettings);
+        TrackChanges(previous, _projectSettings, _modifiedProjectFields);
         _merged = CodingAgentSettings.Default.MergeWith(_globalSettings).MergeWith(_projectSettings);
     }
 
@@ -73,20 +83,89 @@ public sealed class SettingsManager
             _projectSettings = await LoadFromFileAsync(ProjectSettingsPath, ct).ConfigureAwait(false);
         }
 
+        _modifiedGlobalFields.Clear();
+        _modifiedProjectFields.Clear();
         _merged = CodingAgentSettings.Default.MergeWith(_globalSettings).MergeWith(_projectSettings);
     }
 
     public async Task FlushAsync(CancellationToken ct = default)
     {
-        if (GlobalSettingsPath is not null)
+        if (GlobalSettingsPath is not null && _modifiedGlobalFields.Count > 0)
         {
-            await SaveToFileAsync(GlobalSettingsPath, _globalSettings, ct).ConfigureAwait(false);
+            await MergeAndSaveAsync(GlobalSettingsPath, _globalSettings, _modifiedGlobalFields, ct).ConfigureAwait(false);
+            _modifiedGlobalFields.Clear();
         }
 
-        if (ProjectSettingsPath is not null)
+        if (ProjectSettingsPath is not null && _modifiedProjectFields.Count > 0)
         {
-            await SaveToFileAsync(ProjectSettingsPath, _projectSettings, ct).ConfigureAwait(false);
+            await MergeAndSaveAsync(ProjectSettingsPath, _projectSettings, _modifiedProjectFields, ct).ConfigureAwait(false);
+            _modifiedProjectFields.Clear();
         }
+    }
+
+    private static void TrackChanges(CodingAgentSettings previous, CodingAgentSettings current, HashSet<string> modified)
+    {
+        if (!Equals(previous.DefaultProvider, current.DefaultProvider)) modified.Add("defaultProvider");
+        if (!Equals(previous.DefaultModel, current.DefaultModel)) modified.Add("defaultModel");
+        if (!Equals(previous.DefaultThinkingLevel, current.DefaultThinkingLevel)) modified.Add("defaultThinkingLevel");
+        if (!Equals(previous.SessionDir, current.SessionDir)) modified.Add("sessionDir");
+        if (!Equals(previous.ShellPath, current.ShellPath)) modified.Add("shellPath");
+        if (!Equals(previous.SteeringMode, current.SteeringMode)) modified.Add("steeringMode");
+        if (!Equals(previous.FollowUpMode, current.FollowUpMode)) modified.Add("followUpMode");
+        if (!Equals(previous.Theme, current.Theme)) modified.Add("theme");
+        if (!Equals(previous.QuietStartup, current.QuietStartup)) modified.Add("quietStartup");
+        if (!Equals(previous.Compaction, current.Compaction)) modified.Add("compaction");
+        if (!Equals(previous.Retry, current.Retry)) modified.Add("retry");
+    }
+
+    private static async Task MergeAndSaveAsync(
+        string path,
+        CodingAgentSettings settings,
+        IReadOnlySet<string> modifiedFields,
+        CancellationToken ct)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        JsonNode existing;
+        if (File.Exists(path))
+        {
+            try
+            {
+                var json = await File.ReadAllTextAsync(path, ct).ConfigureAwait(false);
+                existing = JsonNode.Parse(json) ?? new JsonObject();
+            }
+            catch
+            {
+                existing = new JsonObject();
+            }
+        }
+        else
+        {
+            existing = new JsonObject();
+        }
+
+        var newNode = JsonSerializer.SerializeToNode(settings, JsonOptions);
+        if (newNode is JsonObject newObj && existing is JsonObject existingObj)
+        {
+            foreach (var field in modifiedFields)
+            {
+                if (newObj.ContainsKey(field))
+                {
+                    existingObj[field] = newObj[field]?.DeepClone();
+                }
+                else
+                {
+                    existingObj.Remove(field);
+                }
+            }
+        }
+
+        var output = existing.ToJsonString(JsonOptions);
+        await File.WriteAllTextAsync(path, output, ct).ConfigureAwait(false);
     }
 
     private static CodingAgentSettings LoadFromFile(string path)
@@ -124,17 +203,5 @@ public sealed class SettingsManager
         {
             return new CodingAgentSettings();
         }
-    }
-
-    private static async Task SaveToFileAsync(string path, CodingAgentSettings settings, CancellationToken ct)
-    {
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        await using var stream = File.Create(path);
-        await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, ct).ConfigureAwait(false);
     }
 }

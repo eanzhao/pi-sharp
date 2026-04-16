@@ -9,6 +9,7 @@ public static class BuiltInToolNames
     public const string Grep = "grep";
     public const string Find = "find";
     public const string Ls = "ls";
+    public const string EditDiff = "edit_diff";
 
     public static IReadOnlyList<string> Default { get; } =
     [
@@ -23,6 +24,7 @@ public static class BuiltInToolNames
         Read,
         Bash,
         Edit,
+        EditDiff,
         Write,
         Grep,
         Find,
