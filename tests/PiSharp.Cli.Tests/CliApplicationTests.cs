@@ -10,6 +10,15 @@ public sealed class CliApplicationTests : IDisposable
     private readonly string _rootDirectory = Path.Combine(Path.GetTempPath(), $"pisharp-cli-app-{Guid.NewGuid():N}");
 
     [Fact]
+    public void GetHelpText_DescribesMomStatsChannelSelectors()
+    {
+        var help = CliArgumentsParser.GetHelpText();
+
+        Assert.Contains("mom stats [--json] [--channel <id|name>] <workspace-directory>", help);
+        Assert.Contains("mom stats --channel general ./mom-data", help);
+    }
+
+    [Fact]
     public async Task RunAsync_DelegatesPodsNamespaceCommands()
     {
         var output = new StringWriter();

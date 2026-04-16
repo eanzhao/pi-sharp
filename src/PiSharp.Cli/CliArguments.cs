@@ -342,7 +342,7 @@ public static class CliArgumentsParser
 Usage:
   {appName} pods [setup|active|remove|start|stop|list|doctor|logs|agent|ssh|shell] ...
   {appName} mom [options] <workspace-directory>
-  {appName} mom stats [--json] [--channel <id>] <workspace-directory>
+  {appName} mom stats [--json] [--channel <id|name>] <workspace-directory>
   {appName} [options] [@files...] [message...]
 
 Options:
@@ -375,6 +375,7 @@ Examples:
   {appName} mom ./mom-data
   {appName} mom stats ./mom-data
   {appName} mom stats --channel C123 ./mom-data
+  {appName} mom stats --channel general ./mom-data
   {appName} mom stats --json ./mom-data
   {appName} "Summarize the repository"
   {appName}                      Start interactive mode when stdin is a TTY

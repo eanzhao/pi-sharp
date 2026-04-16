@@ -160,7 +160,7 @@ Usage:
   {GetUsage(appName, namespaced, MomCommandKind.ShowStats)}
 
 Commands:
-  stats [--json] [--channel <id>] <workspace-directory>
+  stats [--json] [--channel <id|name>] <workspace-directory>
                                 Print persisted runtime stats for a mom workspace
 
 Options:
@@ -176,6 +176,7 @@ Examples:
   {rootCommand} ./mom-data
   {rootCommand} stats ./mom-data
   {rootCommand} stats --channel C123 ./mom-data
+  {rootCommand} stats --channel general ./mom-data
   {rootCommand} stats --json ./mom-data
   {rootCommand} --provider anthropic --model claude-3-7-sonnet-latest ./mom-data
 """;
@@ -194,13 +195,14 @@ Usage:
 
 Options:
   --json                    Output runtime stats as JSON
-  --channel <id>            Show local stats for one channel directory
+  --channel <id|name>       Show local stats for one channel directory
   -h, --help                Show help
   --version                 Show version
 
 Examples:
   {rootCommand} stats ./mom-data
   {rootCommand} stats --channel C123 ./mom-data
+  {rootCommand} stats --channel general ./mom-data
   {rootCommand} stats --json ./mom-data
 """;
     }
@@ -313,9 +315,12 @@ Examples:
         var snapshot = runtimeStats?.Snapshot();
         var workspaceMetadata = LoadWorkspaceMetadataSummary(workspaceDirectory, _timeProvider.GetUtcNow());
         var workspaceMetadataIndex = workspaceMetadata?.WorkspaceIndex;
-        var channelStats = string.IsNullOrWhiteSpace(options.StatsChannelId)
+        var resolvedChannelId = string.IsNullOrWhiteSpace(options.StatsChannelId)
             ? null
-            : BuildChannelStats(workspaceDirectory, options.StatsChannelId!, workspaceMetadataIndex);
+            : ResolveStatsChannelId(options.StatsChannelId!, workspaceMetadataIndex);
+        var channelStats = resolvedChannelId is null
+            ? null
+            : BuildChannelStats(workspaceDirectory, resolvedChannelId, workspaceMetadataIndex);
 
         if (options.JsonOutput)
         {
@@ -477,7 +482,7 @@ Examples:
         var rootCommand = namespaced ? $"{appName} mom" : appName;
         return command switch
         {
-            MomCommandKind.ShowStats => $"{rootCommand} stats [--json] [--channel <id>] <workspace-directory>",
+            MomCommandKind.ShowStats => $"{rootCommand} stats [--json] [--channel <id|name>] <workspace-directory>",
             _ => $"{rootCommand} [--provider <name>] [--model <id>] [--api-key <key>] [--slack-app-token <xapp>] [--slack-bot-token <xoxb>] <workspace-directory>",
         };
     }
@@ -699,6 +704,39 @@ Examples:
 
         var user = workspaceMetadataIndex?.FindUser(entry.User);
         return user?.UserName ?? user?.DisplayName ?? entry.User;
+    }
+
+    private static string ResolveStatsChannelId(
+        string channelSelector,
+        MomSlackWorkspaceIndex? workspaceMetadataIndex)
+    {
+        var trimmedSelector = channelSelector.Trim();
+        if (workspaceMetadataIndex is null || string.IsNullOrWhiteSpace(trimmedSelector))
+        {
+            return trimmedSelector;
+        }
+
+        if (workspaceMetadataIndex.FindChannel(trimmedSelector) is not null)
+        {
+            return trimmedSelector;
+        }
+
+        var normalizedSelector = trimmedSelector.StartsWith('#')
+            ? trimmedSelector[1..]
+            : trimmedSelector;
+
+        foreach (var channel in workspaceMetadataIndex.Channels)
+        {
+            if (string.Equals(channel.Id, trimmedSelector, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(channel.Name, trimmedSelector, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(channel.Name, normalizedSelector, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(FormatChannelLabel(channel.Id, channel.Name), trimmedSelector, StringComparison.OrdinalIgnoreCase))
+            {
+                return channel.Id;
+            }
+        }
+
+        return trimmedSelector;
     }
 
     private static string FormatChannelLabel(string channelId, string? channelName) =>

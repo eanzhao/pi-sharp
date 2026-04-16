@@ -111,7 +111,7 @@ public sealed class MomApplicationTests
 
         Assert.Equal(0, exitCode);
         Assert.Contains("pisharp mom stats", output.ToString());
-        Assert.Contains("--channel", output.ToString());
+        Assert.Contains("--channel <id|name>", output.ToString());
         Assert.Contains("--json", output.ToString());
     }
 
@@ -213,7 +213,7 @@ public sealed class MomApplicationTests
                     Directory.GetCurrentDirectory()),
                 timeProvider: timeProvider);
 
-            var exitCode = await application.RunAsync(["stats", "--channel", "C123", tempDirectory]);
+            var exitCode = await application.RunAsync(["stats", "--channel", "general", tempDirectory]);
 
             Assert.Equal(0, exitCode);
             var rendered = output.ToString();
@@ -279,7 +279,7 @@ public sealed class MomApplicationTests
                 });
             File.WriteAllText(Path.Combine(store.GetSessionDirectory("C123"), "session.jsonl"), "{}");
 
-            var exitCode = await application.RunAsync(["stats", "--json", "--channel", "C123", tempDirectory]);
+            var exitCode = await application.RunAsync(["stats", "--json", "--channel", "general", tempDirectory]);
 
             Assert.Equal(0, exitCode);
             using var document = JsonDocument.Parse(output.ToString());
