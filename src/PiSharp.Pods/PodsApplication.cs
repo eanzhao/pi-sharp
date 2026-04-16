@@ -169,20 +169,21 @@ Usage:
   {podCommandRoot} setup <name> "<ssh>" [--mount <command>] [--models-path <path>] [--vllm release|nightly|gpt-oss]
   {podCommandRoot} active <name>
   {podCommandRoot} remove <name>
-  {rootCommand} start <model> --name <name> [--memory <percent>] [--context <size>] [--gpus <count>] [--pod <name>] [--vllm <args...>]
+  {rootCommand} start <model> --name <name> [--memory <percent>] [--context <size>] [--gpus <count>] [--pod <name>] [--detach] [--vllm <args...>]
   {rootCommand} stop [<name>] [--pod <name>]
-  {rootCommand} list [--pod <name>]
-  {rootCommand} logs <name> [--pod <name>]
+  {rootCommand} list [--pod <name>] [--no-verify]
+  {rootCommand} logs <name> [--pod <name>] [--tail <lines>] [--no-follow]
   {rootCommand} agent <name> [message...] [--pod <name>] [--api-key <key>] [--cwd <dir>] [--thinking <level>] [-i|--interactive]
-  {rootCommand} ssh [<name>] "<command>"
+  {rootCommand} ssh [<name>] "<command>" [-t|--tty]
   {rootCommand} shell [<name>]
 
 Examples:
   {podCommandRoot} setup dc1 "ssh root@1.2.3.4" --models-path /workspace
-  {rootCommand} start Qwen/Qwen2.5-Coder-32B-Instruct --name qwen
+  {rootCommand} start Qwen/Qwen2.5-Coder-32B-Instruct --name qwen --detach
   {rootCommand} list
   {rootCommand} agent qwen "Summarize the repository"
-  {rootCommand} ssh "nvidia-smi"
+  {rootCommand} logs qwen --tail 200 --no-follow
+  {rootCommand} ssh "nvidia-smi" --tty
   {rootCommand} shell dc1
 """;
     }
@@ -290,6 +291,7 @@ Examples:
         string? memory = null;
         string? contextWindow = null;
         int? gpuCount = null;
+        var followStartupLogs = true;
         var customVllmArguments = Array.Empty<string>();
 
         for (var index = 1; index < args.Count; index++)
@@ -310,6 +312,10 @@ Examples:
                     break;
                 case "--gpus":
                     gpuCount = int.Parse(ReadRequiredValue(args, ref index, "--gpus"));
+                    break;
+                case "--detach":
+                case "--no-follow":
+                    followStartupLogs = false;
                     break;
                 case "--vllm":
                     customVllmArguments = args.Skip(index + 1).ToArray();
@@ -334,6 +340,7 @@ Examples:
                     Memory = memory,
                     ContextWindow = contextWindow,
                     GpuCount = gpuCount,
+                    FollowStartupLogs = followStartupLogs,
                     CustomVllmArguments = customVllmArguments,
                 },
                 WritePodOutputAsync,
@@ -344,6 +351,11 @@ Examples:
         await _environment.Output.WriteLineAsync($"Base URL: {result.BaseUri}").ConfigureAwait(false);
         await _environment.Output.WriteLineAsync($"Model: {result.Plan.ModelId}").ConfigureAwait(false);
         await _environment.Output.WriteLineAsync($"PID: {result.ProcessId}").ConfigureAwait(false);
+        if (!followStartupLogs)
+        {
+            await _environment.Output.WriteLineAsync($"Logs: {GetRootCommand()} logs {result.Plan.Name}").ConfigureAwait(false);
+        }
+
         return 0;
     }
 
@@ -386,19 +398,24 @@ Examples:
     private async Task<int> RunListAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
     {
         string? podName = null;
+        var verifyProcesses = true;
 
         for (var index = 0; index < args.Count; index++)
         {
-            if (args[index] == "--pod")
+            switch (args[index])
             {
-                podName = ReadRequiredValue(args, ref index, "--pod");
-                continue;
+                case "--pod":
+                    podName = ReadRequiredValue(args, ref index, "--pod");
+                    break;
+                case "--no-verify":
+                    verifyProcesses = false;
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unexpected argument '{args[index]}'.");
             }
-
-            throw new InvalidOperationException($"Unexpected argument '{args[index]}'.");
         }
 
-        var models = await _podService.GetModelStatusesAsync(podName, verifyProcesses: true, cancellationToken).ConfigureAwait(false);
+        var models = await _podService.GetModelStatusesAsync(podName, verifyProcesses, cancellationToken).ConfigureAwait(false);
         if (models.Count == 0)
         {
             await _environment.Output.WriteLineAsync("No models running on the selected pod.").ConfigureAwait(false);
@@ -429,24 +446,43 @@ Examples:
     {
         if (args.Count == 0)
         {
-            throw new InvalidOperationException("Usage: logs <name> [--pod <name>]");
+            throw new InvalidOperationException("Usage: logs <name> [--pod <name>] [--tail <lines>] [--no-follow]");
         }
 
         var name = args[0];
         string? podName = null;
+        int? tailLines = null;
+        var follow = true;
 
         for (var index = 1; index < args.Count; index++)
         {
-            if (args[index] == "--pod")
+            switch (args[index])
             {
-                podName = ReadRequiredValue(args, ref index, "--pod");
-                continue;
+                case "--pod":
+                    podName = ReadRequiredValue(args, ref index, "--pod");
+                    break;
+                case "--tail":
+                case "-n":
+                    tailLines = int.Parse(ReadRequiredValue(args, ref index, args[index]));
+                    break;
+                case "--no-follow":
+                    follow = false;
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unexpected argument '{args[index]}'.");
             }
-
-            throw new InvalidOperationException($"Unexpected argument '{args[index]}'.");
         }
 
-        await _podService.StreamLogsAsync(name, podName, WritePodOutputAsync, cancellationToken).ConfigureAwait(false);
+        await _podService.StreamLogsAsync(
+            new PodLogsRequest
+            {
+                Name = name,
+                PodName = podName,
+                TailLines = tailLines,
+                Follow = follow,
+            },
+            WritePodOutputAsync,
+            cancellationToken).ConfigureAwait(false);
         return 0;
     }
 
@@ -532,18 +568,41 @@ Examples:
 
     private async Task<int> RunSshAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
     {
-        if (args.Count == 0 || args.Count > 2)
+        var positionalArguments = new List<string>();
+        var forceTty = false;
+
+        for (var index = 0; index < args.Count; index++)
         {
-            throw new InvalidOperationException("Usage: ssh [<name>] \"<command>\"");
+            switch (args[index])
+            {
+                case "-t":
+                case "--tty":
+                    forceTty = true;
+                    break;
+                default:
+                    if (args[index].StartsWith("-", StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException($"Unknown option '{args[index]}'.");
+                    }
+
+                    positionalArguments.Add(args[index]);
+                    break;
+            }
         }
 
-        var podName = args.Count == 2 ? args[0] : null;
-        var command = args.Count == 2 ? args[1] : args[0];
+        if (positionalArguments.Count == 0 || positionalArguments.Count > 2)
+        {
+            throw new InvalidOperationException("Usage: ssh [<name>] \"<command>\" [-t|--tty]");
+        }
+
+        var podName = positionalArguments.Count == 2 ? positionalArguments[0] : null;
+        var command = positionalArguments.Count == 2 ? positionalArguments[1] : positionalArguments[0];
 
         return await _podService.ExecuteSshCommandAsync(
             command,
             podName,
             WritePodOutputAsync,
+            forceTty,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -687,6 +746,8 @@ Examples:
         typeof(PodsApplication).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
         ?? typeof(PodsApplication).Assembly.GetName().Version?.ToString()
         ?? "0.0.0";
+
+    private string GetRootCommand() => _namespaced ? $"{_appName} pods" : _appName;
 
     private async ValueTask WritePodOutputAsync(string text, bool isError, CancellationToken cancellationToken)
     {

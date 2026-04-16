@@ -59,6 +59,17 @@ public sealed record PodModelStatus(
     ModelDeployment Deployment,
     string Status);
 
+public sealed class PodLogsRequest
+{
+    public required string Name { get; init; }
+
+    public string? PodName { get; init; }
+
+    public int? TailLines { get; init; }
+
+    public bool Follow { get; init; } = true;
+}
+
 public sealed class PodService
 {
     private const string SetupScriptRemotePath = "/tmp/pisharp_pod_setup.sh";
@@ -423,22 +434,22 @@ fi
     }
 
     public async Task StreamLogsAsync(
-        string name,
-        string? podName = null,
+        PodLogsRequest request,
         PodOutputHandler? outputHandler = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Name);
 
-        var podReference = ResolvePod(podName);
-        if (!podReference.Pod.Models.ContainsKey(name))
+        var podReference = ResolvePod(request.PodName);
+        if (!podReference.Pod.Models.ContainsKey(request.Name))
         {
-            throw new KeyNotFoundException($"Model '{name}' was not found on pod '{podReference.Name}'.");
+            throw new KeyNotFoundException($"Model '{request.Name}' was not found on pod '{podReference.Name}'.");
         }
 
         var exitCode = await _sshTransport.ExecuteStreamingAsync(
             podReference.Pod.SshCommand,
-            $"tail -f ~/.vllm_logs/{name}.log",
+            BuildLogsCommand(request.Name, request.TailLines, request.Follow),
             (chunk, ct) => ForwardChunkAsync(chunk, outputHandler, ct),
             new SshStreamingOptions { KeepAlive = true },
             cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -726,6 +737,31 @@ exit $exit_code
             builder.Append(ShellQuote(mountCommand));
         }
 
+        return builder.ToString();
+    }
+
+    private static string BuildLogsCommand(string name, int? tailLines, bool follow)
+    {
+        if (tailLines is <= 0)
+        {
+            throw new InvalidOperationException("--tail must be a positive integer.");
+        }
+
+        var builder = new StringBuilder("tail");
+        if (tailLines is not null)
+        {
+            builder.Append(" -n ");
+            builder.Append(tailLines.Value);
+        }
+
+        if (follow)
+        {
+            builder.Append(" -f");
+        }
+
+        builder.Append(" ~/.vllm_logs/");
+        builder.Append(name);
+        builder.Append(".log");
         return builder.ToString();
     }
 

@@ -196,7 +196,11 @@ TS 版 `prompt.ts` 明确区分了 gpt-oss 模型要走 `/v1/responses`。C# 版
 ## 当前取舍
 
 - `ssh` / `shell` 提供最小可用远端访问，但还没有更高阶的会话管理或本地增强体验
+- `ssh` 现在支持 `-t` / `--tty`，便于运行需要伪终端的远端命令，但还没有额外的本地 session 管理
 - `agent` 目前支持 print-mode prompt，也支持 `-i` / 无 prompt 进入交互模式
+- `start` 支持 `--detach`，可以只做远端启动并立即返回；启动健康确认仍然默认基于日志关键字和 `/health`
+- `list` 支持 `--no-verify` 跳过 SSH health check，适合配置离线检查；默认仍会远端校验状态
+- `logs` 支持 `--tail` / `--no-follow`，但还没有更复杂的日志过滤、grep 或多部署聚合视图
 - `rg` 先实现为内置 regex 搜索，而不是直接包装系统 `rg`
 - `glob` 先支持常见 `*` / `**` / `?` 语义，不追求完整 shell glob 行为
 - 启动监控先基于日志关键字和 `/health` 探测，不做更复杂的 remote supervisor
@@ -214,7 +218,8 @@ TS 版 `prompt.ts` 明确区分了 gpt-oss 模型要走 `/v1/responses`。C# 版
 - `PodService` 的 setup / start / failed-start rollback 行为
 - `PodsApplication` 的 standalone / namespaced 路由
 - `PiSharp.Cli` 到 `PiSharp.Pods` 的 `pods` 命名空间转发
-- `pods ssh` / `pods shell` 的远端命令与 shell 启动
+- `pods ssh` / `pods shell` 的远端命令、TTY 模式与 shell 启动
+- `pods start --detach`、`pods list --no-verify`、`pods logs --tail/--no-follow` 的 CLI 行为
 - `pods agent` 的 print / interactive 双路径
 - endpoint 解析和 gpt-oss 的 API 类型选择
 - `ls` / `read` / `glob` / `rg` 工具的基础行为与路径逃逸拦截

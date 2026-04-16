@@ -150,6 +150,96 @@ public sealed class PodServiceTests : IDisposable
         Assert.Empty(store.Load().Pods["dc1"].Models);
     }
 
+    [Fact]
+    public async Task StartModelAsync_CanSkipStartupLogFollowing()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@pod.example.com",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal),
+                ModelsPath = "/workspace",
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.ExecuteResponses.Enqueue(new SshCommandResult(string.Empty, string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("5252\n", string.Empty, 0));
+
+        var service = new PodService(
+            store,
+            transport,
+            getEnvironmentVariable: name => name switch
+            {
+                "HF_TOKEN" => "hf-token",
+                "PI_API_KEY" => "pi-key",
+                _ => null,
+            });
+
+        var result = await service.StartModelAsync(
+            new PodStartRequest
+            {
+                ModelId = "Qwen/Qwen2.5-Coder-32B-Instruct",
+                Name = "qwen",
+                FollowStartupLogs = false,
+            });
+
+        Assert.Equal(5252, result.ProcessId);
+        Assert.Empty(transport.StreamingInvocations);
+        Assert.Equal(5252, store.Load().Pods["dc1"].Models["qwen"].ProcessId);
+    }
+
+    [Fact]
+    public async Task StreamLogsAsync_UsesTailAndFollowOptions()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@pod.example.com",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal)
+                {
+                    ["qwen"] = new()
+                    {
+                        ModelId = "Qwen/Qwen2.5-Coder-32B-Instruct",
+                        Port = 8001,
+                        GpuIds = [0],
+                        ProcessId = 4242,
+                    },
+                },
+                ModelsPath = "/workspace",
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.StreamingResponses.Enqueue(
+            new FakeStreamingResponse(
+                0,
+                [new SshOutputChunk(SshOutputStream.StandardOutput, "log-line\n")]));
+
+        var service = new PodService(store, transport);
+        var chunks = new List<string>();
+
+        await service.StreamLogsAsync(
+            new PodLogsRequest
+            {
+                Name = "qwen",
+                TailLines = 25,
+                Follow = false,
+            },
+            (text, _, _) =>
+            {
+                chunks.Add(text);
+                return ValueTask.CompletedTask;
+            });
+
+        Assert.Equal(["log-line\n"], chunks);
+        Assert.Contains(transport.StreamingInvocations, invocation => invocation.Command == "tail -n 25 ~/.vllm_logs/qwen.log");
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_rootDirectory))

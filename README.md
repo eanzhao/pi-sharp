@@ -33,8 +33,10 @@ dotnet build    # Build all projects
 dotnet test     # Run all tests
 dotnet run --project src/PiSharp.Cli  # Run the CLI
 dotnet run --project src/PiSharp.Cli -- pods  # Run pods commands through the main CLI
+dotnet run --project src/PiSharp.Cli -- pods start Qwen/Qwen2.5-Coder-32B-Instruct --name qwen --detach  # Start and return without streaming startup logs
+dotnet run --project src/PiSharp.Cli -- pods logs qwen --tail 200 --no-follow  # Inspect recent remote logs without following
 dotnet run --project src/PiSharp.Cli -- pods agent qwen -i  # Interactive chat with a pod deployment
-dotnet run --project src/PiSharp.Cli -- pods ssh "nvidia-smi"  # Run a remote command on the active pod
+dotnet run --project src/PiSharp.Cli -- pods ssh "nvidia-smi" --tty  # Run a remote command on the active pod with a forced TTY
 ```
 
 ## Project Structure

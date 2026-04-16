@@ -18,6 +18,10 @@ public sealed class PodsApplicationTests : IDisposable
         Assert.Contains("--interactive", helpText, StringComparison.Ordinal);
         Assert.Contains("pisharp pods ssh", helpText, StringComparison.Ordinal);
         Assert.Contains("pisharp pods shell", helpText, StringComparison.Ordinal);
+        Assert.Contains("--detach", helpText, StringComparison.Ordinal);
+        Assert.Contains("--no-verify", helpText, StringComparison.Ordinal);
+        Assert.Contains("--tail <lines>", helpText, StringComparison.Ordinal);
+        Assert.Contains("--tty", helpText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -97,6 +101,40 @@ public sealed class PodsApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_SshCommand_TtyOption_ForcesTerminalAllocation()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@1.2.3.4",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal),
+                ModelsPath = "/workspace",
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.StreamingResponses.Enqueue(
+            new FakeStreamingResponse(
+                0,
+                [new SshOutputChunk(SshOutputStream.StandardOutput, string.Empty)]));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var app = new PodsApplication(
+            new PodsConsoleEnvironment(new StringReader(string.Empty), output, error, _rootDirectory, false),
+            new PodService(store, transport));
+
+        var exitCode = await app.RunAsync(["ssh", "--tty", "nvidia-smi"]);
+
+        Assert.Equal(0, exitCode);
+        var invocation = Assert.Single(transport.StreamingInvocations);
+        var options = Assert.IsType<SshStreamingOptions>(invocation.Options);
+        Assert.True(options.ForceTty);
+    }
+
+    [Fact]
     public async Task RunAsync_ShellCommand_LaunchesPodShell()
     {
         var store = new PodsConfigurationStore(_rootDirectory);
@@ -122,6 +160,138 @@ public sealed class PodsApplicationTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal(["ssh root@1.2.3.4"], launcher.Launches);
+    }
+
+    [Fact]
+    public async Task RunAsync_StartDetach_SkipsStartupLogStreaming()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@pod.example.com",
+                Gpus =
+                [
+                    new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" },
+                    new GpuInfo { Id = 1, Name = "NVIDIA H100", Memory = "80 GB" },
+                ],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal),
+                ModelsPath = "/workspace",
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.ExecuteResponses.Enqueue(new SshCommandResult(string.Empty, string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("4242\n", string.Empty, 0));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var app = new PodsApplication(
+            new PodsConsoleEnvironment(
+                new StringReader(string.Empty),
+                output,
+                error,
+                _rootDirectory,
+                false,
+                environmentVariables: new Dictionary<string, string?>
+                {
+                    ["HF_TOKEN"] = "hf-token",
+                    ["PI_API_KEY"] = "pi-key",
+                }),
+            new PodService(
+                store,
+                transport,
+                getEnvironmentVariable: name => name switch
+                {
+                    "HF_TOKEN" => "hf-token",
+                    "PI_API_KEY" => "pi-key",
+                    _ => null,
+                }));
+
+        var exitCode = await app.RunAsync(["start", "Qwen/Qwen2.5-Coder-32B-Instruct", "--name", "qwen", "--detach"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(transport.StreamingInvocations);
+        Assert.Contains("Logs: pisharp-pods logs qwen", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsync_ListNoVerify_SkipsRemoteStatusChecks()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@pod.example.com",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal)
+                {
+                    ["qwen"] = new()
+                    {
+                        ModelId = "Qwen/Qwen2.5-Coder-32B-Instruct",
+                        Port = 8001,
+                        GpuIds = [0],
+                        ProcessId = 1234,
+                    },
+                },
+                ModelsPath = "/workspace",
+            });
+
+        var transport = new FakePodSshTransport();
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var app = new PodsApplication(
+            new PodsConsoleEnvironment(new StringReader(string.Empty), output, error, _rootDirectory, false),
+            new PodService(store, transport));
+
+        var exitCode = await app.RunAsync(["list", "--no-verify"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("unknown", output.ToString(), StringComparison.Ordinal);
+        Assert.Empty(transport.ExecuteInvocations);
+    }
+
+    [Fact]
+    public async Task RunAsync_LogsCommand_UsesTailAndNoFollowOptions()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@1.2.3.4",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal)
+                {
+                    ["qwen"] = new()
+                    {
+                        ModelId = "Qwen/Qwen2.5-Coder-32B-Instruct",
+                        Port = 8001,
+                        GpuIds = [0],
+                        ProcessId = 1234,
+                    },
+                },
+                ModelsPath = "/workspace",
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.StreamingResponses.Enqueue(
+            new FakeStreamingResponse(
+                0,
+                [new SshOutputChunk(SshOutputStream.StandardOutput, "log-line\n")]));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var app = new PodsApplication(
+            new PodsConsoleEnvironment(new StringReader(string.Empty), output, error, _rootDirectory, false),
+            new PodService(store, transport));
+
+        var exitCode = await app.RunAsync(["logs", "qwen", "--tail", "50", "--no-follow"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("log-line\n", output.ToString());
+        Assert.Contains(transport.StreamingInvocations, invocation => invocation.Command == "tail -n 50 ~/.vllm_logs/qwen.log");
     }
 
     [Fact]
