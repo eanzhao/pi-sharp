@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Text.Json;
 
 namespace PiSharp.Mom;
@@ -16,16 +17,19 @@ public sealed record MomRuntimeStatsSnapshot(
     string? LastBootstrapBackfillChannel,
     DateTimeOffset? LastBootstrapBackfillFailureAt,
     string? LastBootstrapBackfillFailureChannel,
+    string? LastBootstrapBackfillFailureReason,
     int ReconnectGapBackfillCount,
     int ReconnectGapBackfillMessages,
     int ReconnectGapBackfillFailures,
     DateTimeOffset? LastReconnectGapBackfillAt,
     string? LastReconnectGapBackfillChannel,
     DateTimeOffset? LastReconnectGapBackfillFailureAt,
-    string? LastReconnectGapBackfillFailureChannel);
+    string? LastReconnectGapBackfillFailureChannel,
+    string? LastReconnectGapBackfillFailureReason);
 
 public sealed class MomRuntimeStats
 {
+    private static readonly Regex WhitespacePattern = new(@"\s+", RegexOptions.Compiled);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -47,6 +51,7 @@ public sealed class MomRuntimeStats
     private string? _lastBootstrapBackfillChannel;
     private DateTimeOffset? _lastBootstrapBackfillFailureAt;
     private string? _lastBootstrapBackfillFailureChannel;
+    private string? _lastBootstrapBackfillFailureReason;
     private int _reconnectGapBackfillCount;
     private int _reconnectGapBackfillMessages;
     private int _reconnectGapBackfillFailures;
@@ -54,6 +59,7 @@ public sealed class MomRuntimeStats
     private string? _lastReconnectGapBackfillChannel;
     private DateTimeOffset? _lastReconnectGapBackfillFailureAt;
     private string? _lastReconnectGapBackfillFailureChannel;
+    private string? _lastReconnectGapBackfillFailureReason;
 
     public MomRuntimeStats(string? persistencePath = null)
     {
@@ -105,7 +111,10 @@ public sealed class MomRuntimeStats
         }
     }
 
-    public void RecordBootstrapBackfillFailure(string channel, DateTimeOffset? occurredAt = null)
+    public void RecordBootstrapBackfillFailure(
+        string channel,
+        string reason,
+        DateTimeOffset? occurredAt = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
 
@@ -114,6 +123,7 @@ public sealed class MomRuntimeStats
             _bootstrapBackfillFailures++;
             _lastBootstrapBackfillFailureAt = occurredAt ?? DateTimeOffset.UtcNow;
             _lastBootstrapBackfillFailureChannel = channel;
+            _lastBootstrapBackfillFailureReason = SummarizeReason(reason);
             PersistLocked();
         }
     }
@@ -132,7 +142,10 @@ public sealed class MomRuntimeStats
         }
     }
 
-    public void RecordReconnectGapBackfillFailure(string channel, DateTimeOffset? occurredAt = null)
+    public void RecordReconnectGapBackfillFailure(
+        string channel,
+        string reason,
+        DateTimeOffset? occurredAt = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channel);
 
@@ -141,6 +154,7 @@ public sealed class MomRuntimeStats
             _reconnectGapBackfillFailures++;
             _lastReconnectGapBackfillFailureAt = occurredAt ?? DateTimeOffset.UtcNow;
             _lastReconnectGapBackfillFailureChannel = channel;
+            _lastReconnectGapBackfillFailureReason = SummarizeReason(reason);
             PersistLocked();
         }
     }
@@ -170,13 +184,15 @@ public sealed class MomRuntimeStats
             $"last_bootstrap_channel={snapshot.LastBootstrapBackfillChannel ?? "none"} " +
             $"last_bootstrap_failure={FormatTimestamp(snapshot.LastBootstrapBackfillFailureAt)} " +
             $"last_bootstrap_failure_channel={snapshot.LastBootstrapBackfillFailureChannel ?? "none"} " +
+            $"last_bootstrap_failure_reason={snapshot.LastBootstrapBackfillFailureReason ?? "none"} " +
             $"reconnect_gap_backfills={snapshot.ReconnectGapBackfillCount} " +
             $"reconnect_gap_messages={snapshot.ReconnectGapBackfillMessages} " +
             $"reconnect_gap_failures={snapshot.ReconnectGapBackfillFailures} " +
             $"last_reconnect_gap_backfill={FormatTimestamp(snapshot.LastReconnectGapBackfillAt)} " +
             $"last_reconnect_gap_channel={snapshot.LastReconnectGapBackfillChannel ?? "none"} " +
             $"last_reconnect_gap_failure={FormatTimestamp(snapshot.LastReconnectGapBackfillFailureAt)} " +
-            $"last_reconnect_gap_failure_channel={snapshot.LastReconnectGapBackfillFailureChannel ?? "none"}";
+            $"last_reconnect_gap_failure_channel={snapshot.LastReconnectGapBackfillFailureChannel ?? "none"} " +
+            $"last_reconnect_gap_failure_reason={snapshot.LastReconnectGapBackfillFailureReason ?? "none"}";
     }
 
     private MomRuntimeStatsSnapshot BuildSnapshot() =>
@@ -194,13 +210,15 @@ public sealed class MomRuntimeStats
             _lastBootstrapBackfillChannel,
             _lastBootstrapBackfillFailureAt,
             _lastBootstrapBackfillFailureChannel,
+            _lastBootstrapBackfillFailureReason,
             _reconnectGapBackfillCount,
             _reconnectGapBackfillMessages,
             _reconnectGapBackfillFailures,
             _lastReconnectGapBackfillAt,
             _lastReconnectGapBackfillChannel,
             _lastReconnectGapBackfillFailureAt,
-            _lastReconnectGapBackfillFailureChannel);
+            _lastReconnectGapBackfillFailureChannel,
+            _lastReconnectGapBackfillFailureReason);
 
     private void LoadFromFile(string filePath)
     {
@@ -232,6 +250,7 @@ public sealed class MomRuntimeStats
             _lastBootstrapBackfillChannel = snapshot.LastBootstrapBackfillChannel;
             _lastBootstrapBackfillFailureAt = snapshot.LastBootstrapBackfillFailureAt;
             _lastBootstrapBackfillFailureChannel = snapshot.LastBootstrapBackfillFailureChannel;
+            _lastBootstrapBackfillFailureReason = snapshot.LastBootstrapBackfillFailureReason;
             _reconnectGapBackfillCount = snapshot.ReconnectGapBackfillCount;
             _reconnectGapBackfillMessages = snapshot.ReconnectGapBackfillMessages;
             _reconnectGapBackfillFailures = snapshot.ReconnectGapBackfillFailures;
@@ -239,6 +258,7 @@ public sealed class MomRuntimeStats
             _lastReconnectGapBackfillChannel = snapshot.LastReconnectGapBackfillChannel;
             _lastReconnectGapBackfillFailureAt = snapshot.LastReconnectGapBackfillFailureAt;
             _lastReconnectGapBackfillFailureChannel = snapshot.LastReconnectGapBackfillFailureChannel;
+            _lastReconnectGapBackfillFailureReason = snapshot.LastReconnectGapBackfillFailureReason;
         }
         catch
         {
@@ -266,4 +286,21 @@ public sealed class MomRuntimeStats
 
     private static string FormatTimestamp(DateTimeOffset? timestamp) =>
         timestamp?.ToString("O") ?? "none";
+
+    private static string SummarizeReason(string reason)
+    {
+        var normalized = WhitespacePattern.Replace(reason ?? string.Empty, " ").Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return "unknown";
+        }
+
+        if (normalized.Length <= MomDefaults.RuntimeFailureReasonSummaryCharacterLimit)
+        {
+            return normalized;
+        }
+
+        return
+            $"{normalized[..MomDefaults.RuntimeFailureReasonSummaryCharacterLimit].TrimEnd()}...";
+    }
 }

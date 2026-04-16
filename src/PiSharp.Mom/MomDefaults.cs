@@ -15,4 +15,5 @@ public static class MomDefaults
     public const int StartupBackfillMaxPages = 3;
     public const int InitialChannelBackfillMessageLimit = 50;
     public const int ReconnectBackfillMaxPages = 2;
+    public const int RuntimeFailureReasonSummaryCharacterLimit = 160;
 }
