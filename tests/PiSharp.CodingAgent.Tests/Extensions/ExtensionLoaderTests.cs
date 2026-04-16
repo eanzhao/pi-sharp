@@ -54,6 +54,11 @@ public sealed class ExtensionLoaderTests
 
 public sealed class TestExtension : ICodingAgentExtension
 {
+    public ValueTask ConfigureSessionAsync(
+        CodingAgentSessionBuilder builder,
+        IExtensionApi api,
+        CancellationToken cancellationToken = default) =>
+        ValueTask.CompletedTask;
 }
 
 public sealed class ExtensionWithConstructorArgs : ICodingAgentExtension

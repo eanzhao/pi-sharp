@@ -156,6 +156,8 @@ public sealed class SettingsManagerTests : IDisposable
         await manager.FlushAsync();
 
         var reloaded = SettingsManager.Create(cwd, agentDir);
+        Assert.Equal("dark", manager.GlobalSettings.Theme);
+        Assert.Equal("anthropic", manager.GlobalSettings.DefaultProvider);
         Assert.Equal("manager-model", reloaded.GlobalSettings.DefaultModel);
         Assert.Equal("dark", reloaded.GlobalSettings.Theme);
         Assert.Equal("anthropic", reloaded.GlobalSettings.DefaultProvider);
@@ -185,6 +187,7 @@ public sealed class SettingsManagerTests : IDisposable
         await manager.FlushAsync();
 
         var reloaded = SettingsManager.Create(cwd, agentDir);
+        Assert.Equal("external-project", manager.ProjectSettings.DefaultModel);
         Assert.Equal("dark", reloaded.ProjectSettings.Theme);
         Assert.Equal("external-project", reloaded.ProjectSettings.DefaultModel);
         Assert.Empty(manager.ModifiedProjectFields);

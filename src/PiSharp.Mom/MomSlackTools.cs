@@ -71,9 +71,12 @@ public static class MomSlackTools
 
     private sealed class AttachToolExtension(AgentTool tool) : ICodingAgentExtension
     {
-        public ValueTask ConfigureSessionAsync(CodingAgentSessionBuilder builder, CancellationToken cancellationToken = default)
+        public ValueTask ConfigureSessionAsync(
+            CodingAgentSessionBuilder builder,
+            IExtensionApi api,
+            CancellationToken cancellationToken = default)
         {
-            builder.AddTool(tool, "Upload a local file from the workspace back to the current Slack channel.");
+            api.RegisterTool(tool, "Upload a local file from the workspace back to the current Slack channel.");
             builder.AddPromptGuideline("Use attach when the right deliverable is a local file that should be shared back into Slack.");
             return ValueTask.CompletedTask;
         }

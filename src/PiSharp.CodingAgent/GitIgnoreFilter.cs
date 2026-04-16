@@ -38,7 +38,7 @@ internal sealed class GitIgnoreFilter
 
         for (var i = 0; i < pathSegments.Length; i++)
         {
-            var candidatePath = string.Join('/', pathSegments.Take(i + 1));
+            var candidatePath = string.Join("/", pathSegments.Take(i + 1));
             var candidateIsDirectory = i < pathSegments.Length - 1 || isDirectory;
 
             foreach (var rule in _rules)
@@ -53,7 +53,7 @@ internal sealed class GitIgnoreFilter
         return ignored;
     }
 
-        private static IReadOnlyList<GitIgnoreRule> LoadRules(string workingDirectory)
+    private static IReadOnlyList<GitIgnoreRule> LoadRules(string workingDirectory)
     {
         var directories = new List<string>();
         for (var current = workingDirectory; !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current)!)
@@ -137,13 +137,13 @@ internal sealed class GitIgnoreFilter
             }
 
             var line = rawLine.Trim();
-            if (line.Length == 0 || line.StartsWith('#'))
+            if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal))
             {
                 return null;
             }
 
             var isNegated = false;
-            if (line.StartsWith('!'))
+            if (line.StartsWith("!", StringComparison.Ordinal))
             {
                 isNegated = true;
                 line = line[1..];
@@ -172,7 +172,7 @@ internal sealed class GitIgnoreFilter
                 return null;
             }
 
-            var basenameOnly = !line.Contains('/', StringComparison.Ordinal);
+            var basenameOnly = !line.Contains('/');
             return new GitIgnoreRule(workingDirectory, baseDirectory, isNegated, directoryOnly, anchored, basenameOnly, line);
         }
 

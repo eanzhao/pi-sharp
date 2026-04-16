@@ -51,6 +51,10 @@ public sealed class CodingAgentSessionTests
         Assert.Contains("Extension guideline.", session.SystemPrompt);
         Assert.Contains("Custom hello tool", session.SystemPrompt);
         Assert.Contains(extension.SeenEvents, @event => @event is AgentEvent.ToolExecutionCompleted { ToolName: "hello" });
+        Assert.NotNull(session.ExtensionRunner);
+        Assert.Contains("hello-command", session.ExtensionRunner!.Commands.Keys);
+        Assert.Contains("ctrl+h", session.ExtensionRunner.Shortcuts.Keys);
+        Assert.Contains("hello-flag", session.ExtensionRunner.Flags.Keys);
 
         var toolMessage = Assert.Single(session.State.Messages, message => message.Role == ChatRole.Tool);
         var result = Assert.IsType<FunctionResultContent>(Assert.Single(toolMessage.Contents));
@@ -110,12 +114,18 @@ public sealed class CodingAgentSessionTests
     {
         public List<AgentEvent> SeenEvents { get; } = [];
 
-        public ValueTask ConfigureSessionAsync(CodingAgentSessionBuilder builder, CancellationToken cancellationToken = default)
+        public ValueTask ConfigureSessionAsync(
+            CodingAgentSessionBuilder builder,
+            IExtensionApi api,
+            CancellationToken cancellationToken = default)
         {
             builder.AddPromptGuideline("Extension guideline.");
-            builder.AddTool(
+            api.RegisterTool(
                 AgentTool.Create((string name) => $"hello {name}", name: "hello"),
                 promptSnippet: "Custom hello tool");
+            api.RegisterCommand(new ExtensionCommand("hello-command", "Say hello", (_, _, _) => ValueTask.CompletedTask));
+            api.RegisterShortcut(new ExtensionShortcut("ctrl+h", "Hello shortcut", (_, _) => ValueTask.CompletedTask));
+            api.RegisterFlag(new ExtensionFlag("hello-flag", "Enable hello", "true"));
             return ValueTask.CompletedTask;
         }
 

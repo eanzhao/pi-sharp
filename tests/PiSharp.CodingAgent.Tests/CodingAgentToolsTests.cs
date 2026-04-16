@@ -112,6 +112,7 @@ public sealed class CodingAgentToolsTests : IDisposable
         await File.WriteAllTextAsync(
             Path.Combine(parentDirectory, ".gitignore"),
             """
+            # comment
             ignored.txt
             ignored-dir/
             *.secret

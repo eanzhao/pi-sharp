@@ -4,7 +4,10 @@ namespace PiSharp.CodingAgent;
 
 public interface ICodingAgentExtension
 {
-    ValueTask ConfigureSessionAsync(CodingAgentSessionBuilder builder, CancellationToken cancellationToken = default) =>
+    ValueTask ConfigureSessionAsync(
+        CodingAgentSessionBuilder builder,
+        IExtensionApi api,
+        CancellationToken cancellationToken = default) =>
         ValueTask.CompletedTask;
 
     ValueTask OnAgentEventAsync(CodingAgentSession session, AgentEvent @event, CancellationToken cancellationToken = default) =>

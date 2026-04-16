@@ -188,6 +188,31 @@ public sealed class SessionManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadSession_RoundTripsCompactionDetails()
+    {
+        var manager = new SessionManager(_tempDir, "/tmp");
+        manager.NewSession();
+
+        manager.AppendEntry(new CompactionEntry
+        {
+            Id = "comp",
+            Timestamp = SessionEntry.Now(),
+            Summary = "Summary",
+            FirstKeptEntryId = "entry-1",
+            TokensBefore = 123,
+            Details = new CompactionDetails(["README.md"], ["src/app.cs"]),
+        });
+
+        var reloaded = new SessionManager(_tempDir, "/tmp");
+        await reloaded.LoadSessionAsync(manager.SessionFile!);
+
+        var compaction = Assert.IsType<CompactionEntry>(Assert.Single(reloaded.Entries));
+        Assert.NotNull(compaction.Details);
+        Assert.Equal(["README.md"], compaction.Details!.ReadFiles);
+        Assert.Equal(["src/app.cs"], compaction.Details.ModifiedFiles);
+    }
+
+    [Fact]
     public void SetLeaf_ThrowsForUnknownEntry()
     {
         var manager = new SessionManager(_tempDir, "/tmp");

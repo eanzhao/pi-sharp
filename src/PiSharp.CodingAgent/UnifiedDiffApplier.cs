@@ -88,7 +88,7 @@ public static class UnifiedDiffApplier
     internal static string Apply(string originalContent, UnifiedDiffFilePatch patch)
     {
         var normalizedContent = NormalizeLineEndings(originalContent);
-        var originalHasTrailingNewline = normalizedContent.EndsWith('\n');
+        var originalHasTrailingNewline = normalizedContent.EndsWith("\n", StringComparison.Ordinal);
         var lineEnding = originalContent.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
         var originalLines = SplitContentLines(normalizedContent);
 
@@ -248,7 +248,7 @@ public static class UnifiedDiffApplier
         }
 
         var lines = content.Split('\n').ToList();
-        if (content.EndsWith('\n'))
+        if (content.EndsWith("\n", StringComparison.Ordinal))
         {
             lines.RemoveAt(lines.Count - 1);
         }

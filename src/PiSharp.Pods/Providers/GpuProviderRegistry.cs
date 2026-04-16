@@ -26,7 +26,7 @@ public sealed class GpuProviderRegistry
 
         if (TryGet(name, out var provider))
         {
-            return provider;
+            return provider!;
         }
 
         throw new KeyNotFoundException(

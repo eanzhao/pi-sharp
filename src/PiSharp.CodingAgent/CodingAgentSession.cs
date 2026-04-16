@@ -109,7 +109,7 @@ public sealed class CodingAgentSessionBuilder
 public sealed class CodingAgentSession : IDisposable
 {
     private readonly List<AgentEventHandler> _listeners = [];
-    private readonly IReadOnlyList<ICodingAgentExtension> _extensions;
+    private readonly ExtensionRunner? _extensionRunner;
     private readonly Action _unsubscribe;
     private bool _disposed;
 
@@ -118,13 +118,13 @@ public sealed class CodingAgentSession : IDisposable
         string workingDirectory,
         string systemPrompt,
         IReadOnlyList<string> activeToolNames,
-        IReadOnlyList<ICodingAgentExtension> extensions)
+        ExtensionRunner? extensionRunner)
     {
         Agent = agent;
         WorkingDirectory = workingDirectory;
         SystemPrompt = systemPrompt;
         ActiveToolNames = activeToolNames;
-        _extensions = extensions;
+        _extensionRunner = extensionRunner;
         _unsubscribe = agent.Subscribe(HandleAgentEventAsync);
     }
 
@@ -137,6 +137,8 @@ public sealed class CodingAgentSession : IDisposable
     public string SystemPrompt { get; }
 
     public IReadOnlyList<string> ActiveToolNames { get; }
+
+    public ExtensionRunner? ExtensionRunner => _extensionRunner;
 
     public static async Task<CodingAgentSession> CreateAsync(
         IChatClient chatClient,
@@ -171,9 +173,13 @@ public sealed class CodingAgentSession : IDisposable
         }
 
         var extensions = options.Extensions?.ToArray() ?? Array.Empty<ICodingAgentExtension>();
-        foreach (var extension in extensions)
+        var extensionRunner = extensions.Length == 0
+            ? null
+            : new ExtensionRunner(extensions, options.Model, options.ThinkingLevel);
+
+        if (extensionRunner is not null)
         {
-            await extension.ConfigureSessionAsync(builder, cancellationToken).ConfigureAwait(false);
+            await extensionRunner.LoadAsync(builder, cancellationToken).ConfigureAwait(false);
         }
 
         var allBuiltInTools = CodingAgentTools.CreateAll(workingDirectory, options.ToolOptions);
@@ -204,11 +210,11 @@ public sealed class CodingAgentSession : IDisposable
             chatClient,
             new AgentOptions
             {
-                Model = options.Model,
+                Model = extensionRunner?.CurrentModel ?? options.Model,
                 SystemPrompt = systemPrompt,
                 Tools = finalTools,
                 Messages = options.Messages,
-                ThinkingLevel = options.ThinkingLevel,
+                ThinkingLevel = extensionRunner?.CurrentThinkingLevel ?? options.ThinkingLevel,
                 ChatOptions = options.ChatOptions,
                 ConvertToLlm = options.ConvertToLlm,
                 TransformContext = options.TransformContext,
@@ -219,12 +225,19 @@ public sealed class CodingAgentSession : IDisposable
                 ToolExecution = options.ToolExecution,
             });
 
-        return new CodingAgentSession(
+        var session = new CodingAgentSession(
             agent,
             workingDirectory,
             systemPrompt,
             finalTools.Select(static tool => tool.Name).ToArray(),
-            extensions);
+            extensionRunner);
+
+        if (extensionRunner is not null)
+        {
+            await extensionRunner.BindAsync(session, cancellationToken).ConfigureAwait(false);
+        }
+
+        return session;
     }
 
     public Action Subscribe(AgentEventHandler listener)
@@ -309,9 +322,9 @@ public sealed class CodingAgentSession : IDisposable
 
     private async ValueTask HandleAgentEventAsync(AgentEvent @event, CancellationToken cancellationToken)
     {
-        foreach (var extension in _extensions)
+        if (_extensionRunner is not null)
         {
-            await extension.OnAgentEventAsync(this, @event, cancellationToken).ConfigureAwait(false);
+            await _extensionRunner.DispatchAsync(this, @event, cancellationToken).ConfigureAwait(false);
         }
 
         foreach (var listener in _listeners.ToArray())
