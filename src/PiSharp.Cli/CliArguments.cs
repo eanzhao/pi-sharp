@@ -342,6 +342,7 @@ public static class CliArgumentsParser
 Usage:
   {appName} pods [setup|active|remove|start|stop|list|doctor|logs|agent|ssh|shell] ...
   {appName} mom [options] <workspace-directory>
+  {appName} mom stats <workspace-directory>
   {appName} [options] [@files...] [message...]
 
 Options:
@@ -372,6 +373,7 @@ Examples:
   {appName} pods doctor
   {appName} pods logs qwen --tail 200 --no-follow
   {appName} mom ./mom-data
+  {appName} mom stats ./mom-data
   {appName} "Summarize the repository"
   {appName}                      Start interactive mode when stdin is a TTY
   {appName} --model gpt-4.1-mini --tools read,grep,find "Find failing tests"

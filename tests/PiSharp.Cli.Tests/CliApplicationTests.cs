@@ -88,6 +88,32 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_DelegatesMomStatsNamespaceCommands()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        IReadOnlyList<string>? forwardedArgs = null;
+
+        var application = new CliApplication(
+            new CliEnvironment(
+                new StringReader(string.Empty),
+                output,
+                error,
+                _rootDirectory,
+                isInputRedirected: false),
+            runMomCommand: (args, _) =>
+            {
+                forwardedArgs = args.ToArray();
+                return Task.FromResult(0);
+            });
+
+        var exitCode = await application.RunAsync(["mom", "stats", "./mom-data"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["stats", "./mom-data"], forwardedArgs);
+    }
+
+    [Fact]
     public async Task RunAsync_PrintsAssistantTextAndInjectsContextFilesIntoPrompt()
     {
         var repoDirectory = Path.Combine(_rootDirectory, "repo");

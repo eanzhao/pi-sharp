@@ -4,8 +4,16 @@ using PiSharp.CodingAgent;
 
 namespace PiSharp.Mom;
 
+public enum MomCommandKind
+{
+    RunBot,
+    ShowStats,
+}
+
 public sealed record MomCommandLineOptions
 {
+    public MomCommandKind Command { get; init; } = MomCommandKind.RunBot;
+
     public string? WorkspaceDirectory { get; init; }
 
     public string? Provider { get; init; }
@@ -27,6 +35,7 @@ public sealed class MomApplication
     private readonly CodingAgentProviderCatalog _providerCatalog;
     private readonly Func<string, string, SettingsManager> _createSettingsManager;
     private readonly Func<MomCommandLineOptions, CancellationToken, Task<int>> _runBotAsync;
+    private readonly Func<MomCommandLineOptions, CancellationToken, Task<int>> _runStatsAsync;
 
     public MomApplication(
         MomConsoleEnvironment? environment = null,
@@ -34,7 +43,8 @@ public sealed class MomApplication
         bool namespaced = false,
         CodingAgentProviderCatalog? providerCatalog = null,
         Func<string, string, SettingsManager>? createSettingsManager = null,
-        Func<MomCommandLineOptions, CancellationToken, Task<int>>? runBotAsync = null)
+        Func<MomCommandLineOptions, CancellationToken, Task<int>>? runBotAsync = null,
+        Func<MomCommandLineOptions, CancellationToken, Task<int>>? runStatsAsync = null)
     {
         _environment = environment ?? MomConsoleEnvironment.CreateProcessEnvironment();
         _appName = string.IsNullOrWhiteSpace(appName) ? "pisharp-mom" : appName.Trim();
@@ -42,6 +52,7 @@ public sealed class MomApplication
         _providerCatalog = providerCatalog ?? CodingAgentProviderCatalog.CreateDefault();
         _createSettingsManager = createSettingsManager ?? SettingsManager.Create;
         _runBotAsync = runBotAsync ?? RunBotInternalAsync;
+        _runStatsAsync = runStatsAsync ?? RunStatsInternalAsync;
     }
 
     public async Task<int> RunAsync(IReadOnlyList<string> args, CancellationToken cancellationToken = default)
@@ -64,6 +75,21 @@ public sealed class MomApplication
             return 0;
         }
 
+        if (string.Equals(normalizedArgs[0], "stats", StringComparison.Ordinal))
+        {
+            if (normalizedArgs.Length == 1 || IsHelp(normalizedArgs[1]))
+            {
+                await _environment.Output.WriteLineAsync(GetStatsHelpText(_appName, _namespaced)).ConfigureAwait(false);
+                return 0;
+            }
+
+            if (IsVersion(normalizedArgs[1]))
+            {
+                await _environment.Output.WriteLineAsync(GetVersionText()).ConfigureAwait(false);
+                return 0;
+            }
+        }
+
         MomCommandLineOptions options;
         try
         {
@@ -77,13 +103,20 @@ public sealed class MomApplication
 
         if (string.IsNullOrWhiteSpace(options.WorkspaceDirectory))
         {
-            await _environment.Error.WriteLineAsync("Usage: " + GetUsage(_appName, _namespaced)).ConfigureAwait(false);
+            await _environment.Error.WriteLineAsync(
+                    "Usage: " + GetUsage(_appName, _namespaced, options.Command))
+                .ConfigureAwait(false);
             return 1;
         }
 
         try
         {
-            return await _runBotAsync(options, cancellationToken).ConfigureAwait(false);
+            var runner = options.Command switch
+            {
+                MomCommandKind.ShowStats => _runStatsAsync,
+                _ => _runBotAsync,
+            };
+            return await runner(options, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -105,7 +138,11 @@ public sealed class MomApplication
 {rootCommand} - PiSharp Slack bot runtime
 
 Usage:
-  {GetUsage(appName, namespaced)}
+  {GetUsage(appName, namespaced, MomCommandKind.RunBot)}
+  {GetUsage(appName, namespaced, MomCommandKind.ShowStats)}
+
+Commands:
+  stats <workspace-directory>   Print persisted runtime stats for a mom workspace
 
 Options:
   --provider <name>          Override provider from settings/environment
@@ -118,7 +155,24 @@ Options:
 
 Examples:
   {rootCommand} ./mom-data
+  {rootCommand} stats ./mom-data
   {rootCommand} --provider anthropic --model claude-3-7-sonnet-latest ./mom-data
+""";
+    }
+
+    public static string GetStatsHelpText(string appName = "pisharp-mom", bool namespaced = false)
+    {
+        var rootCommand = namespaced ? $"{appName} mom" : appName;
+
+        return
+        $"""
+{rootCommand} stats - Print persisted mom runtime stats
+
+Usage:
+  {GetUsage(appName, namespaced, MomCommandKind.ShowStats)}
+
+Examples:
+  {rootCommand} stats ./mom-data
 """;
     }
 
@@ -212,7 +266,43 @@ Examples:
         return 0;
     }
 
+    private async Task<int> RunStatsInternalAsync(MomCommandLineOptions options, CancellationToken cancellationToken)
+    {
+        var workspaceDirectory = Path.GetFullPath(options.WorkspaceDirectory!);
+        if (!Directory.Exists(workspaceDirectory))
+        {
+            throw new InvalidOperationException($"Workspace directory not found: {workspaceDirectory}");
+        }
+
+        var statsPath = Path.Combine(workspaceDirectory, MomDefaults.RuntimeStatsFileName);
+        if (!File.Exists(statsPath))
+        {
+            await _environment.Output.WriteLineAsync($"No runtime stats found in {workspaceDirectory}").ConfigureAwait(false);
+            return 0;
+        }
+
+        var runtimeStats = new MomRuntimeStats(statsPath);
+        var snapshot = runtimeStats.Snapshot();
+        foreach (var line in BuildStatsReport(workspaceDirectory, runtimeStats, snapshot))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await _environment.Output.WriteLineAsync(line).ConfigureAwait(false);
+        }
+
+        return 0;
+    }
+
     private static MomCommandLineOptions Parse(IReadOnlyList<string> args)
+    {
+        if (args.Count > 0 && string.Equals(args[0], "stats", StringComparison.Ordinal))
+        {
+            return ParseStatsArguments(args.Skip(1).ToArray());
+        }
+
+        return ParseRunArguments(args);
+    }
+
+    private static MomCommandLineOptions ParseRunArguments(IReadOnlyList<string> args)
     {
         string? workspaceDirectory = null;
         string? provider = null;
@@ -253,12 +343,34 @@ Examples:
 
         return new MomCommandLineOptions
         {
+            Command = MomCommandKind.RunBot,
             WorkspaceDirectory = workspaceDirectory,
             Provider = provider,
             Model = model,
             ApiKey = apiKey,
             SlackAppToken = slackAppToken,
             SlackBotToken = slackBotToken,
+        };
+    }
+
+    private static MomCommandLineOptions ParseStatsArguments(IReadOnlyList<string> args)
+    {
+        string? workspaceDirectory = null;
+
+        for (var index = 0; index < args.Count; index++)
+        {
+            if (args[index].StartsWith("--", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Unknown option '{args[index]}'.");
+            }
+
+            workspaceDirectory ??= args[index];
+        }
+
+        return new MomCommandLineOptions
+        {
+            Command = MomCommandKind.ShowStats,
+            WorkspaceDirectory = workspaceDirectory,
         };
     }
 
@@ -273,10 +385,14 @@ Examples:
         return args[index];
     }
 
-    private static string GetUsage(string appName, bool namespaced)
+    private static string GetUsage(string appName, bool namespaced, MomCommandKind command)
     {
         var rootCommand = namespaced ? $"{appName} mom" : appName;
-        return $"{rootCommand} [--provider <name>] [--model <id>] [--api-key <key>] [--slack-app-token <xapp>] [--slack-bot-token <xoxb>] <workspace-directory>";
+        return command switch
+        {
+            MomCommandKind.ShowStats => $"{rootCommand} stats <workspace-directory>",
+            _ => $"{rootCommand} [--provider <name>] [--model <id>] [--api-key <key>] [--slack-app-token <xapp>] [--slack-bot-token <xoxb>] <workspace-directory>",
+        };
     }
 
     private static bool IsHelp(string value) =>
@@ -288,4 +404,41 @@ Examples:
 
     private static string GetVersionText() =>
         Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
+
+    private static IReadOnlyList<string> BuildStatsReport(
+        string workspaceDirectory,
+        MomRuntimeStats runtimeStats,
+        MomRuntimeStatsSnapshot snapshot)
+    {
+        return
+        [
+            $"Workspace: {workspaceDirectory}",
+            runtimeStats.FormatSummary(),
+            $"Startup backfill: channels={snapshot.StartupBackfillChannels} messages={snapshot.StartupBackfillMessages} last={FormatTimestamp(snapshot.LastStartupBackfillAt)}",
+            $"Reconnects: count={snapshot.ReconnectCount} last={FormatTimestamp(snapshot.LastReconnectAt)} generation={snapshot.LastReconnectGeneration?.ToString() ?? "none"}",
+            $"Bootstrap backfill totals: count={snapshot.BootstrapBackfillCount} messages={snapshot.BootstrapBackfillMessages} failures={snapshot.BootstrapBackfillFailures}",
+            $"Last bootstrap success: {FormatSuccess(snapshot.LastBootstrapBackfillAt, snapshot.LastBootstrapBackfillChannel)}",
+            $"Last bootstrap failure: {FormatFailure(snapshot.LastBootstrapBackfillFailureAt, snapshot.LastBootstrapBackfillFailureChannel, snapshot.LastBootstrapBackfillFailureKind, snapshot.LastBootstrapBackfillFailureReason)}",
+            $"Reconnect-gap backfill totals: count={snapshot.ReconnectGapBackfillCount} messages={snapshot.ReconnectGapBackfillMessages} failures={snapshot.ReconnectGapBackfillFailures}",
+            $"Last reconnect-gap success: {FormatSuccess(snapshot.LastReconnectGapBackfillAt, snapshot.LastReconnectGapBackfillChannel)}",
+            $"Last reconnect-gap failure: {FormatFailure(snapshot.LastReconnectGapBackfillFailureAt, snapshot.LastReconnectGapBackfillFailureChannel, snapshot.LastReconnectGapBackfillFailureKind, snapshot.LastReconnectGapBackfillFailureReason)}",
+        ];
+    }
+
+    private static string FormatSuccess(DateTimeOffset? timestamp, string? channel) =>
+        timestamp is null
+            ? "none"
+            : $"at={FormatTimestamp(timestamp)} channel={channel ?? "none"}";
+
+    private static string FormatFailure(
+        DateTimeOffset? timestamp,
+        string? channel,
+        string? kind,
+        string? reason) =>
+        timestamp is null
+            ? "none"
+            : $"at={FormatTimestamp(timestamp)} channel={channel ?? "none"} kind={kind ?? "unknown"} reason={reason ?? "unknown"}";
+
+    private static string FormatTimestamp(DateTimeOffset? timestamp) =>
+        timestamp?.ToString("O", CultureInfo.InvariantCulture) ?? "none";
 }
