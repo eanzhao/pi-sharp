@@ -321,6 +321,7 @@ Examples:
             await _environment.Output.WriteLineAsync(JsonSerializer.Serialize(
                     new
                     {
+                        schemaVersion = MomDefaults.StatsJsonSchemaVersion,
                         workspaceDirectory,
                         runtimeStatsFound,
                         summary = runtimeStats?.FormatSummary(),

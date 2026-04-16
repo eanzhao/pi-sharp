@@ -284,6 +284,7 @@ public sealed class MomApplicationTests
             Assert.Equal(0, exitCode);
             using var document = JsonDocument.Parse(output.ToString());
             var root = document.RootElement;
+            Assert.Equal(MomDefaults.StatsJsonSchemaVersion, root.GetProperty("schemaVersion").GetInt32());
             Assert.Equal(Path.GetFullPath(tempDirectory), root.GetProperty("workspaceDirectory").GetString());
             Assert.True(root.GetProperty("runtimeStatsFound").GetBoolean());
             Assert.Contains("Runtime stats:", root.GetProperty("summary").GetString());
@@ -339,6 +340,7 @@ public sealed class MomApplicationTests
             Assert.Equal(0, exitCode);
             using var document = JsonDocument.Parse(output.ToString());
             var root = document.RootElement;
+            Assert.Equal(MomDefaults.StatsJsonSchemaVersion, root.GetProperty("schemaVersion").GetInt32());
             Assert.Equal(Path.GetFullPath(tempDirectory), root.GetProperty("workspaceDirectory").GetString());
             Assert.False(root.GetProperty("runtimeStatsFound").GetBoolean());
             Assert.Equal(JsonValueKind.Null, root.GetProperty("summary").ValueKind);

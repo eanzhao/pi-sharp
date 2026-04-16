@@ -13,6 +13,7 @@ public static class MomDefaults
     public const string MemoryFileName = "MEMORY.md";
     public const string RuntimeStatsFileName = "runtime-stats.json";
     public const string SlackMetadataFileName = "slack-metadata.json";
+    public const int StatsJsonSchemaVersion = 1;
     public const int MainMessageCharacterLimit = 35_000;
     public const int MaxQueuedEventsPerChannel = 5;
     public const int StartupBackfillMaxPages = 3;
