@@ -150,9 +150,9 @@ Examples:
             Model = options.Model,
             ApiKey = options.ApiKey,
         };
-        var users = await slackClient.GetUsersAsync(cancellationToken).ConfigureAwait(false);
-        var channels = await slackClient.GetChannelsAsync(users, cancellationToken).ConfigureAwait(false);
-        var workspaceIndex = new MomSlackWorkspaceIndex(users, channels);
+        var workspaceIndex = new MomSlackWorkspaceIndex();
+        using var metadataService = new MomSlackMetadataService(slackClient, workspaceIndex);
+        await metadataService.RefreshAsync(cancellationToken).ConfigureAwait(false);
         using var store = new MomChannelStore(workspaceDirectory, slackBotToken, workspaceIndex: workspaceIndex);
 
         var turnProcessor = new MomTurnProcessor(
@@ -163,7 +163,7 @@ Examples:
             slackClient,
             store);
 
-        var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient, store);
+        var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient, store, metadataService);
         var backfiller = new MomLogBackfiller(slackClient, store);
         var backfillResult = await backfiller.BackfillAllAsync(auth.UserId, cancellationToken).ConfigureAwait(false);
         var socketModeClient = new SlackSocketModeClient(slackClient, slackAppToken);

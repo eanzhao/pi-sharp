@@ -8,20 +8,40 @@ public sealed class MomWorkspaceRuntime
     private readonly ISlackMessagingClient _slackClient;
     private readonly MomTurnProcessor _turnProcessor;
     private readonly MomChannelStore _store;
+    private readonly MomSlackMetadataService? _metadataService;
 
     public MomWorkspaceRuntime(
         MomTurnProcessor turnProcessor,
         ISlackMessagingClient slackClient,
-        MomChannelStore store)
+        MomChannelStore store,
+        MomSlackMetadataService? metadataService = null)
     {
         _turnProcessor = turnProcessor ?? throw new ArgumentNullException(nameof(turnProcessor));
         _slackClient = slackClient ?? throw new ArgumentNullException(nameof(slackClient));
         _store = store ?? throw new ArgumentNullException(nameof(store));
+        _metadataService = metadataService;
     }
 
     public async Task DispatchAsync(SlackIncomingEvent incomingEvent, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(incomingEvent);
+
+        if (_metadataService is not null &&
+            !string.Equals(incomingEvent.UserId, "EVENT", StringComparison.Ordinal))
+        {
+            try
+            {
+                await _metadataService.RefreshIfNeededAsync(
+                        incomingEvent.UserId,
+                        incomingEvent.ChannelId,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // Metadata refresh is best-effort; fall back to raw Slack IDs for the current turn.
+            }
+        }
 
         if (incomingEvent.ShouldLogToChannelLog)
         {

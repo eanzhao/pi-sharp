@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace PiSharp.Mom;
 
-public sealed class SlackWebApiClient : ISlackMessagingClient, IDisposable
+public sealed class SlackWebApiClient : ISlackMessagingClient, ISlackWorkspaceMetadataClient, IDisposable
 {
     private static readonly Uri BaseUri = new("https://slack.com/api/");
     private readonly HttpClient _httpClient;
@@ -172,7 +172,7 @@ public sealed class SlackWebApiClient : ISlackMessagingClient, IDisposable
         return new SlackConversationHistoryPage(messages, nextCursor);
     }
 
-    internal async Task<IReadOnlyList<SlackUserInfo>> GetUsersAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<SlackUserInfo>> GetUsersAsync(CancellationToken cancellationToken = default)
     {
         var users = new List<SlackUserInfo>();
         string? cursor = null;
@@ -219,7 +219,7 @@ public sealed class SlackWebApiClient : ISlackMessagingClient, IDisposable
         return users;
     }
 
-    internal async Task<IReadOnlyList<SlackChannelInfo>> GetChannelsAsync(
+    public async Task<IReadOnlyList<SlackChannelInfo>> GetChannelsAsync(
         IReadOnlyList<SlackUserInfo> users,
         CancellationToken cancellationToken = default)
     {

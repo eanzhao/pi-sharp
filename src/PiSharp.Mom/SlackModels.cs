@@ -41,6 +41,15 @@ public sealed record SlackConversationHistoryPage(
     IReadOnlyList<SlackConversationHistoryMessage> Messages,
     string? NextCursor = null);
 
+public interface ISlackWorkspaceMetadataClient
+{
+    Task<IReadOnlyList<SlackUserInfo>> GetUsersAsync(CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<SlackChannelInfo>> GetChannelsAsync(
+        IReadOnlyList<SlackUserInfo> users,
+        CancellationToken cancellationToken = default);
+}
+
 public interface ISlackMessagingClient
 {
     Task<SlackAuthInfo> AuthenticateAsync(CancellationToken cancellationToken = default);
