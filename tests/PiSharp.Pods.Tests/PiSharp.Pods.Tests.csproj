@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/PiSharp.Pods/PiSharp.Pods.csproj" />
+    <ProjectReference Include="../../src/PiSharp.Tui/PiSharp.Tui.csproj" />
   </ItemGroup>
 
   <ItemGroup>

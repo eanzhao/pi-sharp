@@ -2,12 +2,14 @@ using System.Reflection;
 using Microsoft.Extensions.AI;
 using PiSharp.Agent;
 using PiSharp.Ai;
+using PiSharp.Tui;
 
 namespace PiSharp.Pods;
 
 public sealed class PodsConsoleEnvironment
 {
     private readonly IReadOnlyDictionary<string, string?>? _environmentVariables;
+    private readonly Func<bool, ConsoleKeyInfo>? _readKey;
 
     public PodsConsoleEnvironment(
         TextReader input,
@@ -15,14 +17,20 @@ public sealed class PodsConsoleEnvironment
         TextWriter error,
         string currentDirectory,
         bool isInputRedirected,
-        IReadOnlyDictionary<string, string?>? environmentVariables = null)
+        bool isOutputRedirected = false,
+        IReadOnlyDictionary<string, string?>? environmentVariables = null,
+        ITerminal? terminal = null,
+        Func<bool, ConsoleKeyInfo>? readKey = null)
     {
         Input = input ?? throw new ArgumentNullException(nameof(input));
         Output = output ?? throw new ArgumentNullException(nameof(output));
         Error = error ?? throw new ArgumentNullException(nameof(error));
         CurrentDirectory = Path.GetFullPath(currentDirectory ?? throw new ArgumentNullException(nameof(currentDirectory)));
         IsInputRedirected = isInputRedirected;
+        IsOutputRedirected = isOutputRedirected;
         _environmentVariables = environmentVariables;
+        Terminal = terminal ?? new ProcessTerminal(output);
+        _readKey = readKey;
     }
 
     public TextReader Input { get; }
@@ -34,6 +42,12 @@ public sealed class PodsConsoleEnvironment
     public string CurrentDirectory { get; }
 
     public bool IsInputRedirected { get; }
+
+    public bool IsOutputRedirected { get; }
+
+    public bool IsInteractiveTerminal => !IsInputRedirected && !IsOutputRedirected;
+
+    public ITerminal Terminal { get; }
 
     public string? GetEnvironmentVariable(string name)
     {
@@ -47,13 +61,21 @@ public sealed class PodsConsoleEnvironment
         return Environment.GetEnvironmentVariable(name);
     }
 
+    public ConsoleKeyInfo ReadKey(bool intercept = true) =>
+        _readKey is not null
+            ? _readKey(intercept)
+            : Console.ReadKey(intercept);
+
     public static PodsConsoleEnvironment CreateProcessEnvironment() =>
         new(
             Console.In,
             Console.Out,
             Console.Error,
             Directory.GetCurrentDirectory(),
-            Console.IsInputRedirected);
+            Console.IsInputRedirected,
+            Console.IsOutputRedirected,
+            terminal: new ProcessTerminal(Console.Out),
+            readKey: static intercept => Console.ReadKey(intercept));
 }
 
 public sealed class PodsApplication
@@ -71,14 +93,14 @@ public sealed class PodsApplication
 
     private readonly PodsConsoleEnvironment _environment;
     private readonly PodService _podService;
-    private readonly PodAgentFactory _podAgentFactory;
+    private readonly IPodAgentFactory _podAgentFactory;
     private readonly string _appName;
     private readonly bool _namespaced;
 
     public PodsApplication(
         PodsConsoleEnvironment? environment = null,
         PodService? podService = null,
-        PodAgentFactory? podAgentFactory = null,
+        IPodAgentFactory? podAgentFactory = null,
         string appName = "pisharp-pods",
         bool namespaced = false)
     {
@@ -146,7 +168,7 @@ Usage:
   {rootCommand} stop [<name>] [--pod <name>]
   {rootCommand} list [--pod <name>]
   {rootCommand} logs <name> [--pod <name>]
-  {rootCommand} agent <name> [message...] [--pod <name>] [--api-key <key>] [--cwd <dir>] [--thinking <level>]
+  {rootCommand} agent <name> [message...] [--pod <name>] [--api-key <key>] [--cwd <dir>] [--thinking <level>] [-i|--interactive]
 
 Examples:
   {podCommandRoot} setup dc1 "ssh root@1.2.3.4" --models-path /workspace
@@ -431,6 +453,7 @@ Examples:
         string? apiKey = null;
         string? workingDirectory = null;
         var thinkingLevel = ThinkingLevel.Off;
+        var interactive = false;
         var messages = new List<string>();
 
         for (var index = 1; index < args.Count; index++)
@@ -455,6 +478,10 @@ Examples:
                     }
 
                     break;
+                case "-i":
+                case "--interactive":
+                    interactive = true;
+                    break;
                 default:
                     if (args[index].StartsWith("-", StringComparison.Ordinal))
                     {
@@ -467,9 +494,16 @@ Examples:
         }
 
         var prompt = await BuildPromptAsync(messages).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(prompt))
+        if (interactive && !_environment.IsInteractiveTerminal)
         {
-            throw new InvalidOperationException("No prompt provided. Interactive mode is not implemented yet.");
+            throw new InvalidOperationException("Interactive mode requires an attached terminal.");
+        }
+
+        interactive = interactive || (string.IsNullOrWhiteSpace(prompt) && _environment.IsInteractiveTerminal);
+
+        if (!interactive && string.IsNullOrWhiteSpace(prompt))
+        {
+            throw new InvalidOperationException("No prompt provided. Pass a message, pipe stdin, or use -i.");
         }
 
         var endpoint = _podService.ResolveEndpoint(deploymentName, podName, apiKey);
@@ -482,11 +516,9 @@ Examples:
                 ThinkingLevel = thinkingLevel,
             });
 
-        var reporter = new StreamingConsoleReporter(_environment.Output, _environment.Error);
-        agent.Subscribe(reporter.OnAgentEventAsync);
-        await agent.PromptAsync(prompt, cancellationToken: cancellationToken).ConfigureAwait(false);
-        await reporter.FlushAsync().ConfigureAwait(false);
-        return 0;
+        return interactive
+            ? await RunInteractiveAgentAsync(agent, endpoint, prompt, cancellationToken).ConfigureAwait(false)
+            : await RunPrintModeAgentAsync(agent, prompt!, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<string> BuildPromptAsync(IReadOnlyList<string> messages)
@@ -514,6 +546,84 @@ Examples:
     {
         await _environment.Error.WriteLineAsync($"Unknown command '{command}'.").ConfigureAwait(false);
         return 1;
+    }
+
+    private async Task<int> RunPrintModeAgentAsync(PiSharp.Agent.Agent agent, string prompt, CancellationToken cancellationToken)
+    {
+        var reporter = new StreamingConsoleReporter(_environment.Output, _environment.Error);
+        agent.Subscribe(reporter.OnAgentEventAsync);
+        await agent.PromptAsync(prompt, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await reporter.FlushAsync().ConfigureAwait(false);
+        return 0;
+    }
+
+    private async Task<int> RunInteractiveAgentAsync(
+        PiSharp.Agent.Agent agent,
+        PodEndpoint endpoint,
+        string? initialPrompt,
+        CancellationToken cancellationToken)
+    {
+        var app = new TuiApplication(_environment.Terminal);
+        var view = new PodsInteractiveView();
+        var controller = new PodsInteractiveController(agent, view, endpoint);
+
+        agent.Subscribe(
+            async (@event, ct) =>
+            {
+                await controller.OnAgentEventAsync(@event, ct).ConfigureAwait(false);
+                await app.RenderAsync(cancellationToken: ct).ConfigureAwait(false);
+            });
+
+        app.AddChild(view);
+        app.SetFocus(view);
+        await app.RenderAsync(forceFullRedraw: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (!string.IsNullOrWhiteSpace(initialPrompt))
+        {
+            await controller.SubmitAsync(initialPrompt, cancellationToken).ConfigureAwait(false);
+            await app.RenderAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        while (!controller.ShouldExit)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var keyInfo = _environment.ReadKey(intercept: true);
+            if (PodsConsoleKeyMapper.IsExitKey(keyInfo))
+            {
+                break;
+            }
+
+            var rawInput = PodsConsoleKeyMapper.ToRawInput(keyInfo);
+            if (string.IsNullOrEmpty(rawInput))
+            {
+                continue;
+            }
+
+            string? submittedPrompt = null;
+            void HandleSubmitted(string prompt) => submittedPrompt = prompt;
+
+            view.Submitted += HandleSubmitted;
+            try
+            {
+                await app.HandleInputAsync(rawInput, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                view.Submitted -= HandleSubmitted;
+            }
+
+            if (submittedPrompt is null)
+            {
+                continue;
+            }
+
+            await controller.SubmitAsync(submittedPrompt, cancellationToken).ConfigureAwait(false);
+            await app.RenderAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
+        await _environment.Terminal.WriteAsync($"{Ansi.ShowCursor}{Environment.NewLine}", cancellationToken).ConfigureAwait(false);
+        return 0;
     }
 
     private async Task<int> UnknownSubcommandAsync(string command, string subcommand)

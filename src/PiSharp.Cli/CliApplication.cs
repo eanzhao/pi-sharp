@@ -279,7 +279,10 @@ public sealed class CliApplication
                 _environment.Error,
                 _environment.CurrentDirectory,
                 _environment.IsInputRedirected,
-                environmentVariables: podsEnvironmentVariables),
+                isOutputRedirected: _environment.IsOutputRedirected,
+                environmentVariables: podsEnvironmentVariables,
+                terminal: _environment.Terminal,
+                readKey: _environment.ReadKey),
             appName: "pisharp",
             namespaced: true);
 

@@ -83,7 +83,12 @@ public sealed class PodEndpointResolver
             : PodApiKind.ChatCompletions;
 }
 
-public sealed class PodAgentFactory
+public interface IPodAgentFactory
+{
+    PiSharp.Agent.Agent Create(PodEndpoint endpoint, PodAgentFactoryOptions? options = null);
+}
+
+public sealed class PodAgentFactory : IPodAgentFactory
 {
     private static readonly ProviderId PodsProviderId = new("pods");
 
