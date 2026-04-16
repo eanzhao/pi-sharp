@@ -17,6 +17,8 @@ public sealed record MomCommandLineOptions
 
     public bool JsonOutput { get; init; }
 
+    public string? StatsChannelId { get; init; }
+
     public string? WorkspaceDirectory { get; init; }
 
     public string? Provider { get; init; }
@@ -36,6 +38,10 @@ public sealed class MomApplication
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,
+    };
+    private static readonly JsonSerializerOptions LoggedMessageJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
     };
 
     private readonly MomConsoleEnvironment _environment;
@@ -151,7 +157,7 @@ Usage:
   {GetUsage(appName, namespaced, MomCommandKind.ShowStats)}
 
 Commands:
-  stats [--json] <workspace-directory>
+  stats [--json] [--channel <id>] <workspace-directory>
                                 Print persisted runtime stats for a mom workspace
 
 Options:
@@ -166,6 +172,7 @@ Options:
 Examples:
   {rootCommand} ./mom-data
   {rootCommand} stats ./mom-data
+  {rootCommand} stats --channel C123 ./mom-data
   {rootCommand} stats --json ./mom-data
   {rootCommand} --provider anthropic --model claude-3-7-sonnet-latest ./mom-data
 """;
@@ -184,11 +191,13 @@ Usage:
 
 Options:
   --json                    Output runtime stats as JSON
+  --channel <id>            Show local stats for one channel directory
   -h, --help                Show help
   --version                 Show version
 
 Examples:
   {rootCommand} stats ./mom-data
+  {rootCommand} stats --channel C123 ./mom-data
   {rootCommand} stats --json ./mom-data
 """;
     }
@@ -292,46 +301,49 @@ Examples:
         }
 
         var statsPath = Path.Combine(workspaceDirectory, MomDefaults.RuntimeStatsFileName);
-        if (!File.Exists(statsPath))
-        {
-            if (options.JsonOutput)
-            {
-                await _environment.Output.WriteLineAsync(JsonSerializer.Serialize(
-                        new
-                        {
-                            workspaceDirectory,
-                            runtimeStatsFound = false,
-                        },
-                        StatsJsonOptions))
-                    .ConfigureAwait(false);
-                return 0;
-            }
+        var runtimeStatsFound = File.Exists(statsPath);
+        MomRuntimeStats? runtimeStats = runtimeStatsFound ? new MomRuntimeStats(statsPath) : null;
+        var snapshot = runtimeStats?.Snapshot();
+        var channelStats = string.IsNullOrWhiteSpace(options.StatsChannelId)
+            ? null
+            : BuildChannelStats(workspaceDirectory, options.StatsChannelId!);
 
-            await _environment.Output.WriteLineAsync($"No runtime stats found in {workspaceDirectory}").ConfigureAwait(false);
-            return 0;
-        }
-
-        var runtimeStats = new MomRuntimeStats(statsPath);
-        var snapshot = runtimeStats.Snapshot();
         if (options.JsonOutput)
         {
             await _environment.Output.WriteLineAsync(JsonSerializer.Serialize(
                     new
                     {
                         workspaceDirectory,
-                        runtimeStatsFound = true,
-                        summary = runtimeStats.FormatSummary(),
+                        runtimeStatsFound,
+                        summary = runtimeStats?.FormatSummary(),
                         snapshot,
+                        channel = channelStats,
                     },
                     StatsJsonOptions))
                 .ConfigureAwait(false);
             return 0;
         }
 
-        foreach (var line in BuildStatsReport(workspaceDirectory, runtimeStats, snapshot))
+        if (runtimeStatsFound && runtimeStats is not null && snapshot is not null)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await _environment.Output.WriteLineAsync(line).ConfigureAwait(false);
+            foreach (var line in BuildStatsReport(workspaceDirectory, runtimeStats, snapshot))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await _environment.Output.WriteLineAsync(line).ConfigureAwait(false);
+            }
+        }
+        else
+        {
+            await _environment.Output.WriteLineAsync($"No runtime stats found in {workspaceDirectory}").ConfigureAwait(false);
+        }
+
+        if (channelStats is not null)
+        {
+            foreach (var line in BuildChannelStatsReport(channelStats))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await _environment.Output.WriteLineAsync(line).ConfigureAwait(false);
+            }
         }
 
         return 0;
@@ -402,12 +414,19 @@ Examples:
     {
         string? workspaceDirectory = null;
         var jsonOutput = false;
+        string? channelId = null;
 
         for (var index = 0; index < args.Count; index++)
         {
             if (string.Equals(args[index], "--json", StringComparison.Ordinal))
             {
                 jsonOutput = true;
+                continue;
+            }
+
+            if (string.Equals(args[index], "--channel", StringComparison.Ordinal))
+            {
+                channelId = ReadRequiredValue(args, ref index, "--channel");
                 continue;
             }
 
@@ -423,6 +442,7 @@ Examples:
         {
             Command = MomCommandKind.ShowStats,
             JsonOutput = jsonOutput,
+            StatsChannelId = channelId,
             WorkspaceDirectory = workspaceDirectory,
         };
     }
@@ -443,7 +463,7 @@ Examples:
         var rootCommand = namespaced ? $"{appName} mom" : appName;
         return command switch
         {
-            MomCommandKind.ShowStats => $"{rootCommand} stats [--json] <workspace-directory>",
+            MomCommandKind.ShowStats => $"{rootCommand} stats [--json] [--channel <id>] <workspace-directory>",
             _ => $"{rootCommand} [--provider <name>] [--model <id>] [--api-key <key>] [--slack-app-token <xapp>] [--slack-bot-token <xoxb>] <workspace-directory>",
         };
     }
@@ -494,4 +514,126 @@ Examples:
 
     private static string FormatTimestamp(DateTimeOffset? timestamp) =>
         timestamp?.ToString("O", CultureInfo.InvariantCulture) ?? "none";
+
+    private static MomChannelStatsReport BuildChannelStats(string workspaceDirectory, string channelId)
+    {
+        var channelDirectory = Path.Combine(workspaceDirectory, channelId);
+        var logPath = Path.Combine(channelDirectory, MomDefaults.LogFileName);
+        var attachmentsDirectory = Path.Combine(channelDirectory, "attachments");
+        var sessionDirectory = Path.Combine(channelDirectory, MomDefaults.SessionDirectoryName);
+        var scratchDirectory = Path.Combine(channelDirectory, MomDefaults.ScratchDirectoryName);
+        var channelMemoryPath = Path.Combine(channelDirectory, MomDefaults.MemoryFileName);
+
+        var totalMessages = 0;
+        var userMessages = 0;
+        var botMessages = 0;
+        var attachmentCount = 0;
+        string? latestTimestamp = null;
+        DateTimeOffset? latestAt = null;
+        string? latestUser = null;
+
+        if (File.Exists(logPath))
+        {
+            foreach (var line in File.ReadLines(logPath))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    continue;
+                }
+
+                MomLoggedMessage? entry;
+                try
+                {
+                    entry = JsonSerializer.Deserialize<MomLoggedMessage>(line, LoggedMessageJsonOptions);
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+
+                if (entry is null)
+                {
+                    continue;
+                }
+
+                totalMessages++;
+                if (entry.IsBot)
+                {
+                    botMessages++;
+                }
+                else
+                {
+                    userMessages++;
+                }
+
+                attachmentCount += entry.Attachments.Count;
+
+                if (!TryParseSlackTimestamp(entry.Ts, out var timestampValue))
+                {
+                    continue;
+                }
+
+                var latestValue = TryParseSlackTimestamp(latestTimestamp ?? string.Empty, out var parsedLatest)
+                    ? parsedLatest
+                    : double.MinValue;
+                if (latestTimestamp is null || timestampValue > latestValue)
+                {
+                    latestTimestamp = entry.Ts;
+                    latestAt = ParseSlackTimestamp(entry.Ts);
+                    latestUser = entry.UserName ?? entry.DisplayName ?? entry.User;
+                }
+            }
+        }
+
+        return new MomChannelStatsReport(
+            channelId,
+            channelDirectory,
+            Directory.Exists(channelDirectory),
+            File.Exists(logPath),
+            totalMessages,
+            userMessages,
+            botMessages,
+            attachmentCount,
+            latestTimestamp,
+            latestAt,
+            latestUser,
+            Directory.Exists(attachmentsDirectory) ? Directory.EnumerateFiles(attachmentsDirectory, "*", SearchOption.AllDirectories).Count() : 0,
+            Directory.Exists(sessionDirectory) ? Directory.EnumerateFiles(sessionDirectory, "*", SearchOption.AllDirectories).Count() : 0,
+            File.Exists(channelMemoryPath),
+            Directory.Exists(scratchDirectory) ? Directory.EnumerateFiles(scratchDirectory, "*", SearchOption.AllDirectories).Count() : 0);
+    }
+
+    private static IReadOnlyList<string> BuildChannelStatsReport(MomChannelStatsReport channelStats) =>
+        [
+            $"Channel: {channelStats.ChannelId}",
+            $"Channel directory: {channelStats.ChannelDirectory}",
+            $"Log: found={channelStats.LogFound} messages={channelStats.TotalMessages} user={channelStats.UserMessages} bot={channelStats.BotMessages} attachments={channelStats.AttachmentCount}",
+            $"Latest logged message: ts={channelStats.LatestTimestamp ?? "none"} at={FormatTimestamp(channelStats.LatestAt)} user={channelStats.LatestUser ?? "none"}",
+            $"Local files: sessions={channelStats.SessionFileCount} attachment_files={channelStats.AttachmentFileCount} scratch_files={channelStats.ScratchFileCount} channel_memory={channelStats.ChannelMemoryExists}",
+        ];
+
+    private static DateTimeOffset? ParseSlackTimestamp(string timestamp) =>
+        TryParseSlackTimestamp(timestamp, out var value)
+            ? DateTimeOffset.FromUnixTimeMilliseconds((long)Math.Floor(value * 1000))
+            : null;
+
+    private static bool TryParseSlackTimestamp(string timestamp, out double value) =>
+        double.TryParse(timestamp, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+
+    private sealed record MomChannelStatsReport(
+        string ChannelId,
+        string ChannelDirectory,
+        bool ChannelDirectoryExists,
+        bool LogFound,
+        int TotalMessages,
+        int UserMessages,
+        int BotMessages,
+        int AttachmentCount,
+        string? LatestTimestamp,
+        DateTimeOffset? LatestAt,
+        string? LatestUser,
+        int AttachmentFileCount,
+        int SessionFileCount,
+        bool ChannelMemoryExists,
+        int ScratchFileCount);
 }

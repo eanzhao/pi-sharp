@@ -107,10 +107,10 @@ public sealed class CliApplicationTests : IDisposable
                 return Task.FromResult(0);
             });
 
-        var exitCode = await application.RunAsync(["mom", "stats", "--json", "./mom-data"]);
+        var exitCode = await application.RunAsync(["mom", "stats", "--json", "--channel", "C123", "./mom-data"]);
 
         Assert.Equal(0, exitCode);
-        Assert.Equal(["stats", "--json", "./mom-data"], forwardedArgs);
+        Assert.Equal(["stats", "--json", "--channel", "C123", "./mom-data"], forwardedArgs);
     }
 
     [Fact]
