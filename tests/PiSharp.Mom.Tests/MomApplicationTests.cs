@@ -293,6 +293,8 @@ public sealed class MomApplicationTests
             Assert.Equal(
                 Path.Combine(Path.GetFullPath(tempDirectory), MomDefaults.SlackMetadataFileName),
                 paths.GetProperty("slackMetadataPath").GetString());
+            Assert.Equal("general", root.GetProperty("requestedChannel").GetString());
+            Assert.Equal("C123", root.GetProperty("resolvedChannelId").GetString());
             Assert.True(root.GetProperty("runtimeStatsFound").GetBoolean());
             Assert.Contains("Runtime stats:", root.GetProperty("summary").GetString());
             var snapshot = root.GetProperty("snapshot");
@@ -362,6 +364,8 @@ public sealed class MomApplicationTests
             Assert.Equal(
                 Path.Combine(Path.GetFullPath(tempDirectory), MomDefaults.SlackMetadataFileName),
                 paths.GetProperty("slackMetadataPath").GetString());
+            Assert.Equal(JsonValueKind.Null, root.GetProperty("requestedChannel").ValueKind);
+            Assert.Equal(JsonValueKind.Null, root.GetProperty("resolvedChannelId").ValueKind);
             Assert.False(root.GetProperty("runtimeStatsFound").GetBoolean());
             Assert.Equal(JsonValueKind.Null, root.GetProperty("summary").ValueKind);
             Assert.Equal(JsonValueKind.Null, root.GetProperty("snapshot").ValueKind);

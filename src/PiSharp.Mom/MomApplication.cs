@@ -330,6 +330,8 @@ Examples:
                         schemaVersion = MomDefaults.StatsJsonSchemaVersion,
                         workspaceDirectory,
                         paths = new WorkspacePathsJson(statsPath, slackMetadataPath),
+                        requestedChannel = options.StatsChannelId,
+                        resolvedChannelId,
                         runtimeStatsFound,
                         summary = runtimeStats?.FormatSummary(),
                         snapshot,
