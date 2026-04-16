@@ -13,4 +13,5 @@ public static class MomDefaults
     public const int MaxQueuedEventsPerChannel = 5;
     public const int StartupBackfillMaxPages = 3;
     public const int InitialChannelBackfillMessageLimit = 50;
+    public const int ReconnectBackfillMaxPages = 2;
 }

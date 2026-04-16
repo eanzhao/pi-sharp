@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 
 namespace PiSharp.Mom;
 
@@ -31,6 +32,7 @@ public sealed class MomWorkspaceRuntime
     public async Task DispatchAsync(SlackIncomingEvent incomingEvent, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(incomingEvent);
+        var state = _channelStates.GetOrAdd(incomingEvent.ChannelId, static _ => new ChannelState());
 
         if (_metadataService is not null &&
             !string.Equals(incomingEvent.UserId, "EVENT", StringComparison.Ordinal))
@@ -49,25 +51,7 @@ public sealed class MomWorkspaceRuntime
             }
         }
 
-        if (_backfiller is not null &&
-            _botUserId is not null &&
-            !string.Equals(incomingEvent.UserId, "EVENT", StringComparison.Ordinal) &&
-            !File.Exists(_store.GetLogFilePath(incomingEvent.ChannelId)))
-        {
-            try
-            {
-                await _backfiller.BackfillRecentHistoryAsync(
-                        incomingEvent.ChannelId,
-                        _botUserId,
-                        incomingEvent.Timestamp,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch
-            {
-                // History bootstrap is best-effort; continue with the live event even if Slack backfill fails.
-            }
-        }
+        await EnsureHistoryContinuityAsync(state, incomingEvent, cancellationToken).ConfigureAwait(false);
 
         if (incomingEvent.ShouldLogToChannelLog)
         {
@@ -84,7 +68,6 @@ public sealed class MomWorkspaceRuntime
         }
 
         var normalizedPrompt = MomTurnProcessor.NormalizePrompt(incomingEvent);
-        var state = _channelStates.GetOrAdd(incomingEvent.ChannelId, static _ => new ChannelState());
         var shouldNotifyBusy = false;
 
         if (string.Equals(normalizedPrompt, "stop", StringComparison.OrdinalIgnoreCase))
@@ -160,6 +143,90 @@ public sealed class MomWorkspaceRuntime
         return Task.CompletedTask;
     }
 
+    private async Task EnsureHistoryContinuityAsync(
+        ChannelState state,
+        SlackIncomingEvent incomingEvent,
+        CancellationToken cancellationToken)
+    {
+        if (_backfiller is null ||
+            _botUserId is null ||
+            string.Equals(incomingEvent.UserId, "EVENT", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var logPath = _store.GetLogFilePath(incomingEvent.ChannelId);
+        if (!File.Exists(logPath))
+        {
+            try
+            {
+                await _backfiller.BackfillRecentHistoryAsync(
+                        incomingEvent.ChannelId,
+                        _botUserId,
+                        incomingEvent.Timestamp,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // History bootstrap is best-effort; continue with the live event even if Slack backfill fails.
+            }
+
+            return;
+        }
+
+        if (incomingEvent.ConnectionGeneration <= 0)
+        {
+            return;
+        }
+
+        var latestLoggedTimestamp = _store.GetLatestLoggedTimestamp(incomingEvent.ChannelId);
+        if (!ShouldBackfillReconnectGap(latestLoggedTimestamp, incomingEvent.Timestamp))
+        {
+            return;
+        }
+
+        lock (state.SyncRoot)
+        {
+            if (state.LastReconnectBackfillGeneration >= incomingEvent.ConnectionGeneration)
+            {
+                return;
+            }
+
+            state.LastReconnectBackfillGeneration = incomingEvent.ConnectionGeneration;
+        }
+
+        try
+        {
+            await _backfiller.BackfillMissingHistoryAsync(
+                    incomingEvent.ChannelId,
+                    _botUserId,
+                    latestLoggedTimestamp!,
+                    incomingEvent.Timestamp,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Reconnect gap backfill is best-effort; continue with the live event even if Slack history fetch fails.
+        }
+    }
+
+    private static bool ShouldBackfillReconnectGap(string? oldestTimestamp, string latestTimestamp)
+    {
+        if (string.IsNullOrWhiteSpace(oldestTimestamp) ||
+            !TryParseTimestamp(oldestTimestamp, out var oldestValue) ||
+            !TryParseTimestamp(latestTimestamp, out var latestValue))
+        {
+            return false;
+        }
+
+        return latestValue > oldestValue;
+    }
+
+    private static bool TryParseTimestamp(string value, out double timestamp) =>
+        double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out timestamp);
+
     private async Task RunChannelTurnAsync(ChannelState state, SlackIncomingEvent incomingEvent)
     {
         CancellationTokenSource? cancellationTokenSource;
@@ -199,6 +266,8 @@ public sealed class MomWorkspaceRuntime
     private sealed class ChannelState
     {
         public object SyncRoot { get; } = new();
+
+        public int LastReconnectBackfillGeneration { get; set; } = -1;
 
         public CancellationTokenSource? CancellationTokenSource { get; set; }
 

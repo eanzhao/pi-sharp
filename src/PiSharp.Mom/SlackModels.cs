@@ -25,7 +25,8 @@ public sealed record SlackIncomingEvent(
     bool QueueIfBusy = false,
     string? StatusText = null,
     bool RequiresResponse = true,
-    bool ShouldLogToChannelLog = true);
+    bool ShouldLogToChannelLog = true,
+    int ConnectionGeneration = 0);
 
 public sealed record SlackAuthInfo(string UserId);
 

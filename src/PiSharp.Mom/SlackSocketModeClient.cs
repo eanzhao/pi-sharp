@@ -27,18 +27,28 @@ public sealed class SlackSocketModeClient
         ArgumentException.ThrowIfNullOrWhiteSpace(botUserId);
         ArgumentNullException.ThrowIfNull(onEventAsync);
 
+        var connectionGeneration = 0;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             using var socket = new ClientWebSocket();
             var socketUrl = await _webApiClient.OpenSocketConnectionAsync(_appToken, cancellationToken).ConfigureAwait(false);
             await socket.ConnectAsync(new Uri(socketUrl), cancellationToken).ConfigureAwait(false);
 
-            var reconnect = await ReceiveLoopAsync(socket, botUserId, onEventAsync, responseCutoffTimestamp, cancellationToken).ConfigureAwait(false);
+            var reconnect = await ReceiveLoopAsync(
+                    socket,
+                    botUserId,
+                    onEventAsync,
+                    responseCutoffTimestamp,
+                    connectionGeneration,
+                    cancellationToken)
+                .ConfigureAwait(false);
             if (!reconnect)
             {
                 return;
             }
 
+            connectionGeneration++;
             await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
         }
     }
@@ -48,6 +58,7 @@ public sealed class SlackSocketModeClient
         string botUserId,
         Func<SlackIncomingEvent, CancellationToken, Task> onEventAsync,
         string? responseCutoffTimestamp,
+        int connectionGeneration,
         CancellationToken cancellationToken)
     {
         var buffer = new byte[8 * 1024];
@@ -95,7 +106,12 @@ public sealed class SlackSocketModeClient
 
             if (TryParseIncomingEvent(root, botUserId, out var incomingEvent) && incomingEvent is not null)
             {
-                incomingEvent = ApplyResponseCutoff(incomingEvent, responseCutoffTimestamp);
+                incomingEvent = ApplyResponseCutoff(
+                    incomingEvent with
+                    {
+                        ConnectionGeneration = connectionGeneration,
+                    },
+                    responseCutoffTimestamp);
                 await onEventAsync(incomingEvent, cancellationToken).ConfigureAwait(false);
             }
         }

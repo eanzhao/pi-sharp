@@ -62,6 +62,28 @@ public sealed class MomLogBackfiller
             cancellationToken);
     }
 
+    public Task<int> BackfillMissingHistoryAsync(
+        string channelId,
+        string botUserId,
+        string oldestTimestamp,
+        string latestTimestamp,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(botUserId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(oldestTimestamp);
+        ArgumentException.ThrowIfNullOrWhiteSpace(latestTimestamp);
+
+        return BackfillChannelAsync(
+            channelId,
+            botUserId,
+            oldest: oldestTimestamp,
+            latest: latestTimestamp,
+            limit: 200,
+            maxPages: MomDefaults.ReconnectBackfillMaxPages,
+            cancellationToken);
+    }
+
     private async Task<int> BackfillChannelAsync(
         string channelId,
         string botUserId,

@@ -396,6 +396,114 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Contains("ack", logLines[2]);
     }
 
+    [Fact]
+    public async Task DispatchAsync_BackfillsReconnectGapForExistingChannel()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("ack"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var historyRequestCount = 0;
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        using var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/conversations.history", StringComparison.Ordinal) == true)
+            {
+                historyRequestCount++;
+                var response =
+                    """
+                    {
+                      "ok": true,
+                      "messages": [
+                        {
+                          "user": "U234",
+                          "text": "Missed during reconnect",
+                          "ts": "12345.2000"
+                        }
+                      ],
+                      "response_metadata": {
+                        "next_cursor": ""
+                      }
+                    }
+                    """;
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
+                };
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {request.RequestUri}");
+        }));
+
+        using var historyClient = new SlackWebApiClient("xoxb-test", httpClient);
+        using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
+        await store.LogIncomingEventAsync(new SlackIncomingEvent(
+            "C123",
+            "U999",
+            "Existing local context",
+            "12345.1000",
+            "message",
+            IsDirectMessage: false,
+            RequiresResponse: false));
+
+        var backfiller = new MomLogBackfiller(historyClient, store);
+        var turnProcessor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+        var runtime = new MomWorkspaceRuntime(
+            turnProcessor,
+            slackClient,
+            store,
+            backfiller: backfiller,
+            botUserId: "B123");
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> summarize reconnect gap",
+            "12345.3000",
+            "app_mention",
+            IsDirectMessage: false,
+            ConnectionGeneration: 1));
+
+        await runtime.WaitForIdleAsync("C123");
+
+        Assert.Equal(1, historyRequestCount);
+        var request = Assert.Single(chatClient.Requests);
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U999]: Existing local context");
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U234]: Missed during reconnect");
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U123]: summarize reconnect gap");
+
+        var logLines = File.ReadAllLines(Path.Combine(_workspaceDirectory, "C123", "log.jsonl"));
+        Assert.Equal(4, logLines.Length);
+        Assert.Contains("Existing local context", logLines[0]);
+        Assert.Contains("Missed during reconnect", logLines[1]);
+        Assert.Contains("summarize reconnect gap", logLines[2]);
+        Assert.Contains("ack", logLines[3]);
+    }
+
     private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>
         new(
         [

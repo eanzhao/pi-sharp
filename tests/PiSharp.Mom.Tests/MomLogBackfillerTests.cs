@@ -153,6 +153,66 @@ public sealed class MomLogBackfillerTests : IDisposable
         Assert.DoesNotContain("\"ts\":\"200.000000\"", logLines[0], StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task BackfillMissingHistoryAsync_UsesOldestAndLatestBounds()
+    {
+        string? requestBody = null;
+
+        Directory.CreateDirectory(Path.Combine(_workspaceDirectory, "C123"));
+        await File.WriteAllTextAsync(
+            Path.Combine(_workspaceDirectory, "C123", "log.jsonl"),
+            """
+            {"date":"2026-04-16T00:00:00.0000000+00:00","ts":"100.000000","user":"U111","text":"existing","attachments":[],"isBot":false}
+            """);
+
+        using var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/conversations.history", StringComparison.Ordinal) == true)
+            {
+                requestBody = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+
+                var response =
+                    """
+                    {
+                      "ok": true,
+                      "messages": [
+                        {
+                          "user": "U222",
+                          "text": "missing during reconnect",
+                          "ts": "150.000000"
+                        }
+                      ],
+                      "response_metadata": {
+                        "next_cursor": ""
+                      }
+                    }
+                    """;
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(response, Encoding.UTF8, "application/json"),
+                };
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {request.RequestUri}");
+        }));
+
+        using var slackClient = new SlackWebApiClient("xoxb-test", httpClient);
+        using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
+        var backfiller = new MomLogBackfiller(slackClient, store);
+
+        var messagesLogged = await backfiller.BackfillMissingHistoryAsync("C123", "B123", "100.000000", "200.000000");
+
+        Assert.Equal(1, messagesLogged);
+        Assert.NotNull(requestBody);
+        Assert.Contains("\"oldest\":\"100.000000\"", requestBody, StringComparison.Ordinal);
+        Assert.Contains("\"latest\":\"200.000000\"", requestBody, StringComparison.Ordinal);
+
+        var logLines = File.ReadAllLines(Path.Combine(_workspaceDirectory, "C123", "log.jsonl"));
+        Assert.Equal(2, logLines.Length);
+        Assert.Contains("\"ts\":\"150.000000\"", logLines[1]);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_workspaceDirectory))
