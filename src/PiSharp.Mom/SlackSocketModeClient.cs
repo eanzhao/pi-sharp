@@ -22,6 +22,7 @@ public sealed class SlackSocketModeClient
         string botUserId,
         Func<SlackIncomingEvent, CancellationToken, Task> onEventAsync,
         string? responseCutoffTimestamp = null,
+        MomRuntimeStats? runtimeStats = null,
         Func<string, CancellationToken, Task>? reportNoticeAsync = null,
         CancellationToken cancellationToken = default)
     {
@@ -38,6 +39,7 @@ public sealed class SlackSocketModeClient
 
             if (connectionGeneration > 0 && reportNoticeAsync is not null)
             {
+                runtimeStats?.RecordReconnect();
                 try
                 {
                     await reportNoticeAsync(

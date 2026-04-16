@@ -356,6 +356,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         using var historyClient = new SlackWebApiClient("xoxb-test", httpClient);
         using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
         var backfiller = new MomLogBackfiller(historyClient, store);
+        var runtimeStats = new MomRuntimeStats();
         var turnProcessor = new MomTurnProcessor(
             environment,
             new MomRuntimeOptions
@@ -379,7 +380,8 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
             {
                 notices.Add(message);
                 return Task.CompletedTask;
-            });
+            },
+            runtimeStats: runtimeStats);
 
         await runtime.DispatchAsync(new SlackIncomingEvent(
             "C123",
@@ -400,7 +402,11 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Contains("Earlier missing channel message", logLines[0]);
         Assert.Contains("summarize the channel", logLines[1]);
         Assert.Contains("ack", logLines[2]);
-        Assert.Contains(notices, notice => notice == "Bootstrap backfill #1 for C123: 1 messages");
+        Assert.Contains(notices, notice => notice == "Bootstrap backfill for C123: 1 messages");
+        var snapshot = runtimeStats.Snapshot();
+        Assert.Equal(1, snapshot.BootstrapBackfillCount);
+        Assert.Equal(1, snapshot.BootstrapBackfillMessages);
+        Assert.Equal(0, snapshot.BootstrapBackfillFailures);
     }
 
     [Fact]
@@ -467,6 +473,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
             RequiresResponse: false));
 
         var backfiller = new MomLogBackfiller(historyClient, store);
+        var runtimeStats = new MomRuntimeStats();
         var turnProcessor = new MomTurnProcessor(
             environment,
             new MomRuntimeOptions
@@ -490,7 +497,8 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
             {
                 notices.Add(message);
                 return Task.CompletedTask;
-            });
+            },
+            runtimeStats: runtimeStats);
 
         await runtime.DispatchAsync(new SlackIncomingEvent(
             "C123",
@@ -515,7 +523,11 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Contains("Missed during reconnect", logLines[1]);
         Assert.Contains("summarize reconnect gap", logLines[2]);
         Assert.Contains("ack", logLines[3]);
-        Assert.Contains(notices, notice => notice == "Reconnect gap backfill #1 for C123 after reconnect #1: 1 messages");
+        Assert.Contains(notices, notice => notice == "Reconnect gap backfill for C123 after reconnect #1: 1 messages");
+        var snapshot = runtimeStats.Snapshot();
+        Assert.Equal(1, snapshot.ReconnectGapBackfillCount);
+        Assert.Equal(1, snapshot.ReconnectGapBackfillMessages);
+        Assert.Equal(0, snapshot.ReconnectGapBackfillFailures);
     }
 
     private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>

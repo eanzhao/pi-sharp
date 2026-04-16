@@ -9,6 +9,7 @@ public static class MomDefaults
     public const string EventsDirectoryName = "events";
     public const string LogFileName = "log.jsonl";
     public const string MemoryFileName = "MEMORY.md";
+    public const string RuntimeStatsFileName = "runtime-stats.json";
     public const int MainMessageCharacterLimit = 35_000;
     public const int MaxQueuedEventsPerChannel = 5;
     public const int StartupBackfillMaxPages = 3;

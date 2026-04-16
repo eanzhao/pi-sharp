@@ -154,8 +154,13 @@ Examples:
         using var metadataService = new MomSlackMetadataService(slackClient, workspaceIndex);
         await metadataService.RefreshAsync(cancellationToken).ConfigureAwait(false);
         using var store = new MomChannelStore(workspaceDirectory, slackBotToken, workspaceIndex: workspaceIndex);
-        Task ReportNoticeAsync(string message, CancellationToken _) =>
-            _environment.Output.WriteLineAsync(message);
+        var runtimeStats = new MomRuntimeStats(Path.Combine(workspaceDirectory, MomDefaults.RuntimeStatsFileName));
+
+        async Task ReportNoticeAsync(string message, CancellationToken _)
+        {
+            await _environment.Output.WriteLineAsync(message).ConfigureAwait(false);
+            await _environment.Output.WriteLineAsync(runtimeStats.FormatSummary()).ConfigureAwait(false);
+        }
 
         var turnProcessor = new MomTurnProcessor(
             _environment,
@@ -173,8 +178,10 @@ Examples:
             metadataService,
             backfiller,
             auth.UserId,
-            ReportNoticeAsync);
+            ReportNoticeAsync,
+            runtimeStats);
         var backfillResult = await backfiller.BackfillAllAsync(auth.UserId, cancellationToken).ConfigureAwait(false);
+        runtimeStats.RecordStartupBackfill(backfillResult);
         var socketModeClient = new SlackSocketModeClient(slackClient, slackAppToken);
         using var eventsWatcher = new MomEventsWatcher(workspaceDirectory, runtime.DispatchAsync);
         eventsWatcher.Start(cancellationToken);
@@ -189,6 +196,7 @@ Examples:
         await _environment.Output.WriteLineAsync(
                 $"Loaded {workspaceIndex.Users.Count} users and {workspaceIndex.Channels.Count} channels")
             .ConfigureAwait(false);
+        await _environment.Output.WriteLineAsync(runtimeStats.FormatSummary()).ConfigureAwait(false);
 
         var responseCutoffTimestamp = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000d)
             .ToString("F6", CultureInfo.InvariantCulture);
@@ -197,6 +205,7 @@ Examples:
                 auth.UserId,
                 runtime.DispatchAsync,
                 responseCutoffTimestamp,
+                runtimeStats,
                 ReportNoticeAsync,
                 cancellationToken)
             .ConfigureAwait(false);
