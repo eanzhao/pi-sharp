@@ -303,6 +303,99 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.True(File.Exists(attachmentPath));
     }
 
+    [Fact]
+    public async Task DispatchAsync_BackfillsRecentHistoryForFirstSeenChannel()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("ack"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        using var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/conversations.history", StringComparison.Ordinal) == true)
+            {
+                var response =
+                    """
+                    {
+                      "ok": true,
+                      "messages": [
+                        {
+                          "user": "U234",
+                          "text": "Earlier missing channel message",
+                          "ts": "12345.1000"
+                        }
+                      ],
+                      "response_metadata": {
+                        "next_cursor": ""
+                      }
+                    }
+                    """;
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(response, System.Text.Encoding.UTF8, "application/json"),
+                };
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {request.RequestUri}");
+        }));
+
+        using var historyClient = new SlackWebApiClient("xoxb-test", httpClient);
+        using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
+        var backfiller = new MomLogBackfiller(historyClient, store);
+        var turnProcessor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+        var runtime = new MomWorkspaceRuntime(
+            turnProcessor,
+            slackClient,
+            store,
+            backfiller: backfiller,
+            botUserId: "B123");
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> summarize the channel",
+            "12345.2000",
+            "app_mention",
+            IsDirectMessage: false));
+
+        await runtime.WaitForIdleAsync("C123");
+
+        var request = Assert.Single(chatClient.Requests);
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U234]: Earlier missing channel message");
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U123]: summarize the channel");
+
+        var logLines = File.ReadAllLines(Path.Combine(_workspaceDirectory, "C123", "log.jsonl"));
+        Assert.Equal(3, logLines.Length);
+        Assert.Contains("Earlier missing channel message", logLines[0]);
+        Assert.Contains("summarize the channel", logLines[1]);
+        Assert.Contains("ack", logLines[2]);
+    }
+
     private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>
         new(
         [

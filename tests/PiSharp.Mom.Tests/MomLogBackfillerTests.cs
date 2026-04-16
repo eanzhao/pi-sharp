@@ -99,6 +99,60 @@ public sealed class MomLogBackfillerTests : IDisposable
         Assert.Equal("attachment body", await File.ReadAllTextAsync(attachmentPath));
     }
 
+    [Fact]
+    public async Task BackfillRecentHistoryAsync_UsesLatestCutoffAndOnlyLogsEarlierMessages()
+    {
+        string? requestBody = null;
+
+        using var httpClient = new HttpClient(new StubHttpMessageHandler(request =>
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("/conversations.history", StringComparison.Ordinal) == true)
+            {
+                requestBody = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+
+                var response =
+                    """
+                    {
+                      "ok": true,
+                      "messages": [
+                        {
+                          "user": "U222",
+                          "text": "earlier missing context",
+                          "ts": "199.000000"
+                        }
+                      ],
+                      "response_metadata": {
+                        "next_cursor": ""
+                      }
+                    }
+                    """;
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(response, Encoding.UTF8, "application/json"),
+                };
+            }
+
+            throw new InvalidOperationException($"Unexpected request: {request.RequestUri}");
+        }));
+
+        using var slackClient = new SlackWebApiClient("xoxb-test", httpClient);
+        using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
+        var backfiller = new MomLogBackfiller(slackClient, store);
+
+        var messagesLogged = await backfiller.BackfillRecentHistoryAsync("C123", "B123", "200.000000");
+
+        Assert.Equal(1, messagesLogged);
+        Assert.NotNull(requestBody);
+        Assert.Contains("\"latest\":\"200.000000\"", requestBody, StringComparison.Ordinal);
+        Assert.Contains("\"limit\":50", requestBody, StringComparison.Ordinal);
+
+        var logLines = File.ReadAllLines(Path.Combine(_workspaceDirectory, "C123", "log.jsonl"));
+        Assert.Single(logLines);
+        Assert.Contains("\"ts\":\"199.000000\"", logLines[0]);
+        Assert.DoesNotContain("\"ts\":\"200.000000\"", logLines[0], StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_workspaceDirectory))

@@ -28,18 +28,49 @@ public sealed class MomLogBackfiller
 
         foreach (var channelId in channelIds)
         {
-            totalMessages += await BackfillChannelAsync(channelId, botUserId, cancellationToken).ConfigureAwait(false);
+            totalMessages += await BackfillChannelAsync(
+                    channelId,
+                    botUserId,
+                    oldest: _store.GetLatestLoggedTimestamp(channelId),
+                    latest: null,
+                    limit: 200,
+                    maxPages: MomDefaults.StartupBackfillMaxPages,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         return new MomBackfillResult(channelIds.Length, totalMessages);
     }
 
+    public Task<int> BackfillRecentHistoryAsync(
+        string channelId,
+        string botUserId,
+        string latestTimestamp,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(botUserId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(latestTimestamp);
+
+        return BackfillChannelAsync(
+            channelId,
+            botUserId,
+            oldest: null,
+            latest: latestTimestamp,
+            limit: MomDefaults.InitialChannelBackfillMessageLimit,
+            maxPages: 1,
+            cancellationToken);
+    }
+
     private async Task<int> BackfillChannelAsync(
         string channelId,
         string botUserId,
+        string? oldest,
+        string? latest,
+        int limit,
+        int maxPages,
         CancellationToken cancellationToken)
     {
-        var oldest = _store.GetLatestLoggedTimestamp(channelId);
         var pageCount = 0;
         string? cursor = null;
         var messagesLogged = 0;
@@ -49,7 +80,9 @@ public sealed class MomLogBackfiller
             var page = await _slackClient.GetConversationHistoryAsync(
                     channelId,
                     oldest: oldest,
+                    latest: latest,
                     cursor: cursor,
+                    limit: limit,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
@@ -80,7 +113,7 @@ public sealed class MomLogBackfiller
             cursor = page.NextCursor;
             pageCount++;
         }
-        while (!string.IsNullOrWhiteSpace(cursor) && pageCount < 3);
+        while (!string.IsNullOrWhiteSpace(cursor) && pageCount < maxPages);
 
         return messagesLogged;
     }

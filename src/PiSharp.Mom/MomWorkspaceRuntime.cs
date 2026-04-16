@@ -9,17 +9,23 @@ public sealed class MomWorkspaceRuntime
     private readonly MomTurnProcessor _turnProcessor;
     private readonly MomChannelStore _store;
     private readonly MomSlackMetadataService? _metadataService;
+    private readonly MomLogBackfiller? _backfiller;
+    private readonly string? _botUserId;
 
     public MomWorkspaceRuntime(
         MomTurnProcessor turnProcessor,
         ISlackMessagingClient slackClient,
         MomChannelStore store,
-        MomSlackMetadataService? metadataService = null)
+        MomSlackMetadataService? metadataService = null,
+        MomLogBackfiller? backfiller = null,
+        string? botUserId = null)
     {
         _turnProcessor = turnProcessor ?? throw new ArgumentNullException(nameof(turnProcessor));
         _slackClient = slackClient ?? throw new ArgumentNullException(nameof(slackClient));
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _metadataService = metadataService;
+        _backfiller = backfiller;
+        _botUserId = string.IsNullOrWhiteSpace(botUserId) ? null : botUserId.Trim();
     }
 
     public async Task DispatchAsync(SlackIncomingEvent incomingEvent, CancellationToken cancellationToken = default)
@@ -40,6 +46,26 @@ public sealed class MomWorkspaceRuntime
             catch
             {
                 // Metadata refresh is best-effort; fall back to raw Slack IDs for the current turn.
+            }
+        }
+
+        if (_backfiller is not null &&
+            _botUserId is not null &&
+            !string.Equals(incomingEvent.UserId, "EVENT", StringComparison.Ordinal) &&
+            !File.Exists(_store.GetLogFilePath(incomingEvent.ChannelId)))
+        {
+            try
+            {
+                await _backfiller.BackfillRecentHistoryAsync(
+                        incomingEvent.ChannelId,
+                        _botUserId,
+                        incomingEvent.Timestamp,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // History bootstrap is best-effort; continue with the live event even if Slack backfill fails.
             }
         }
 

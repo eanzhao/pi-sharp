@@ -115,6 +115,7 @@ public sealed class SlackWebApiClient : ISlackMessagingClient, ISlackWorkspaceMe
     internal async Task<SlackConversationHistoryPage> GetConversationHistoryAsync(
         string channelId,
         string? oldest = null,
+        string? latest = null,
         string? cursor = null,
         int limit = 200,
         CancellationToken cancellationToken = default)
@@ -127,6 +128,7 @@ public sealed class SlackWebApiClient : ISlackMessagingClient, ISlackWorkspaceMe
                 {
                     channel = channelId,
                     oldest,
+                    latest,
                     inclusive = false,
                     limit,
                     cursor,

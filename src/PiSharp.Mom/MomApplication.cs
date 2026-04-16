@@ -163,8 +163,14 @@ Examples:
             slackClient,
             store);
 
-        var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient, store, metadataService);
         var backfiller = new MomLogBackfiller(slackClient, store);
+        var runtime = new MomWorkspaceRuntime(
+            turnProcessor,
+            slackClient,
+            store,
+            metadataService,
+            backfiller,
+            auth.UserId);
         var backfillResult = await backfiller.BackfillAllAsync(auth.UserId, cancellationToken).ConfigureAwait(false);
         var socketModeClient = new SlackSocketModeClient(slackClient, slackAppToken);
         using var eventsWatcher = new MomEventsWatcher(workspaceDirectory, runtime.DispatchAsync);
