@@ -120,6 +120,7 @@ public sealed class CliApplication
 
     private readonly CliEnvironment _environment;
     private readonly CodingAgentProviderCatalog _providerCatalog;
+    private readonly ProviderModelDiscoveryService _modelDiscoveryService;
     private readonly Func<string, string, SettingsManager> _createSettingsManager;
     private readonly Func<IReadOnlyList<string>, CancellationToken, Task<int>> _runPodsCommand;
     private readonly Func<IReadOnlyList<string>, CancellationToken, Task<int>> _runMomCommand;
@@ -127,12 +128,15 @@ public sealed class CliApplication
     public CliApplication(
         CliEnvironment? environment = null,
         CodingAgentProviderCatalog? providerCatalog = null,
+        ProviderModelDiscoveryService? modelDiscoveryService = null,
         Func<string, string, SettingsManager>? createSettingsManager = null,
         Func<IReadOnlyList<string>, CancellationToken, Task<int>>? runPodsCommand = null,
         Func<IReadOnlyList<string>, CancellationToken, Task<int>>? runMomCommand = null)
     {
         _environment = environment ?? CliEnvironment.CreateProcessEnvironment();
         _providerCatalog = providerCatalog ?? CodingAgentProviderCatalog.CreateDefault();
+        _modelDiscoveryService = modelDiscoveryService
+            ?? new ProviderModelDiscoveryService(Path.Combine(_environment.GetHomeDirectory(), ".pi-sharp", "cache", "models"));
         _createSettingsManager = createSettingsManager ?? SettingsManager.Create;
         _runPodsCommand = runPodsCommand ?? RunPodsCommandAsync;
         _runMomCommand = runMomCommand ?? RunMomCommandAsync;
@@ -176,7 +180,7 @@ public sealed class CliApplication
 
         if (parsed.ListModels)
         {
-            await ListModelsAsync(parsed.ListModelsFilter).ConfigureAwait(false);
+            await ListModelsAsync(parsed.ListModelsFilter, cancellationToken).ConfigureAwait(false);
             return 0;
         }
 
@@ -575,10 +579,29 @@ public sealed class CliApplication
         persistedMessageCount = messages.Count;
     }
 
-    private async Task ListModelsAsync(string? filter)
+    private async Task ListModelsAsync(string? filter, CancellationToken cancellationToken)
     {
-        var models = _providerCatalog.GetAll()
-            .SelectMany(static provider => provider.KnownModels)
+        var providerResults = new List<ProviderModelDiscoveryService.ProviderModelListingResult>();
+
+        foreach (var provider in _providerCatalog.GetAll())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var apiKey = string.IsNullOrWhiteSpace(provider.Configuration.ApiKeyEnvironmentVariable)
+                ? null
+                : _environment.GetEnvironmentVariable(provider.Configuration.ApiKeyEnvironmentVariable);
+            providerResults.Add(
+                await _modelDiscoveryService.ListProviderModelsAsync(provider, apiKey, cancellationToken).ConfigureAwait(false));
+        }
+
+        foreach (var warning in providerResults
+                     .Select(static result => result.Warning)
+                     .Where(static warning => !string.IsNullOrWhiteSpace(warning)))
+        {
+            await _environment.Error.WriteLineAsync(warning!).ConfigureAwait(false);
+        }
+
+        var models = providerResults
+            .SelectMany(static result => result.Models)
             .Where(model =>
                 string.IsNullOrWhiteSpace(filter) ||
                 $"{model.ProviderId.Value}/{model.Id}".Contains(filter, StringComparison.OrdinalIgnoreCase) ||
@@ -591,7 +614,7 @@ public sealed class CliApplication
         {
             await _environment.Output.WriteLineAsync(
                     string.IsNullOrWhiteSpace(filter)
-                        ? "No known models are registered."
+                        ? "No available models were discovered."
                         : $"No models matching '{filter}'.")
                 .ConfigureAwait(false);
             return;

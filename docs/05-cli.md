@@ -54,7 +54,7 @@ provider/model/api-key/context/session-dir 的解析不再耦合在 `Program.cs`
 这样后续新增 Web、Pods 或别的 frontend 时，可以复用同一套 provider/bootstrap 逻辑，而不是复制一份
 CLI 版本的初始化代码。
 
-### 2. Provider catalog 扩到三家
+### 2. Provider catalog 扩到三家，并支持远程模型发现
 
 `CodingAgentProviderCatalog` 当前内置：
 
@@ -68,6 +68,16 @@ CLI 版本的初始化代码。
 - 已知 `ModelMetadata`
 - env-based API key 解析
 - `modelId + apiKey -> IChatClient` 的工厂
+
+`--list-models` 现在会在有对应 API key 时直接调用 provider API 拉取实时模型列表，并把远程结果和静态
+`ModelMetadata` 合并：
+
+- OpenAI：`GET /v1/models`
+- Anthropic：`GET /v1/models`
+- Google：`GET /v1beta/models`
+
+远程结果会缓存到 `~/.pi-sharp/cache/models/*.json`，TTL 为 5 分钟；当 API 不可用时，会优先回退到缓存，
+再退回静态内置模型，避免 `--list-models` 因网络或 provider 故障直接失效。
 
 CLI 只负责把参数传进去，不再关心具体 SDK 初始化。
 
@@ -166,7 +176,6 @@ resume 和 fork 后继续作为上下文恢复。
 
 - interactive mode 只覆盖 transcript + input + live stream，不做完整 pane 系统
 - session selector 先支持 `id` / `path` / `latest`，不做更复杂的 picker
-- provider catalog 仍是静态内置，不做远程模型发现
 - `@file` 仍按文本文件处理，不做图片输入
 
 ### JSON 输出模式
@@ -193,7 +202,7 @@ resume 和 fork 后继续作为上下文恢复。
 
 - 参数解析和冲突 flag 校验（含 `--json`）
 - shared bootstrap 的 provider/api-key/context/session-dir 解析
-- print mode 的 context 注入和模型列表输出
+- print mode 的 context 注入和远程模型发现/缓存/fallback
 - JSON 输出模式的结构化响应
 - persisted session 的 resume / fork / invalid selector
 - interactive mode 在 TTY 下的最小编排

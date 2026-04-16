@@ -360,7 +360,7 @@ Options:
   --resume <id-or-path>          Resume a persisted session
   --fork <id-or-path>            Fork a persisted session into a new session
   --no-session                   Disable session persistence for this run
-  --list-models [pattern]        List known models, optionally filtered
+  --list-models [pattern]        List available models, optionally filtered
   --print, -p                    Print mode (current default behavior)
   --json                         Output response as JSON (machine-readable)
   --verbose                      Print tool execution diagnostics to stderr

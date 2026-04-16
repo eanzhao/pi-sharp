@@ -2,6 +2,7 @@ using Microsoft.Extensions.AI;
 using PiSharp.Ai;
 using PiSharp.CodingAgent;
 using PiSharp.Tui;
+using PiSharp.Cli.Tests.Support;
 
 namespace PiSharp.Cli.Tests;
 
@@ -231,6 +232,72 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_ListModels_PrintsDiscoveredRemoteModels()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var providerCatalog = new CodingAgentProviderCatalog(
+            [
+                new CodingAgentProviderFactory
+                {
+                    Configuration = new ProviderConfiguration(
+                        ProviderId.OpenAi,
+                        ApiId.OpenAi,
+                        "OpenAI",
+                        DefaultModelId: "gpt-4.1-mini",
+                        ApiKeyEnvironmentVariable: "OPENAI_API_KEY"),
+                    KnownModels =
+                    [
+                        new ModelMetadata(
+                            "gpt-4.1-mini",
+                            "GPT-4.1 mini",
+                            ApiId.OpenAi,
+                            ProviderId.OpenAi,
+                            1_000_000,
+                            32_768,
+                            ModelCapability.TextInput | ModelCapability.Streaming | ModelCapability.ToolCalling,
+                            ModelPricing.Free),
+                    ],
+                    CreateChatClient = (_, _) => throw new NotSupportedException(),
+                },
+            ]);
+
+        var environment = new CliEnvironment(
+            new StringReader(string.Empty),
+            output,
+            error,
+            _rootDirectory,
+            isInputRedirected: false,
+            environmentVariables: new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "test-key",
+            });
+
+        var discoveryService = new ProviderModelDiscoveryService(
+            Path.Combine(_rootDirectory, "model-cache"),
+            new HttpClient(new StubHttpMessageHandler((request, _) =>
+            {
+                Assert.Equal("https://api.openai.com/v1/models", request.RequestUri?.ToString());
+                Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
+                Assert.Equal("test-key", request.Headers.Authorization?.Parameter);
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"data":[{"id":"gpt-4.1-mini"},{"id":"gpt-5-mini"}]}"""),
+                };
+            })),
+            new ManualTimeProvider(new DateTimeOffset(2026, 4, 16, 0, 0, 0, TimeSpan.Zero)));
+
+        var application = new CliApplication(environment, providerCatalog, discoveryService);
+
+        var exitCode = await application.RunAsync(["--list-models"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("gpt-4.1-mini", output.ToString());
+        Assert.Contains("gpt-5-mini", output.ToString());
+        Assert.DoesNotContain("Warning:", error.ToString());
+    }
+
+    [Fact]
     public async Task RunAsync_ResumesPersistedSessionFromId()
     {
         var repoDirectory = Path.Combine(_rootDirectory, "resume-repo");
@@ -455,5 +522,12 @@ public sealed class CliApplicationTests : IDisposable
             Writes.Add(output);
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class StubHttpMessageHandler(
+        Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> handler) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(handler(request, cancellationToken));
     }
 }
