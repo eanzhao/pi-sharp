@@ -119,6 +119,8 @@ assistant 消息内部再按 `AIContent` 的顺序渲染：
 - 先用 SSR-friendly HTML 渲染，不做浏览器专属 API
 - 工具结果先单独显示，不在 assistant bubble 内做复杂配对折叠
 - 样式只提供基础组件样式，不引入完整设计系统
+- 代码高亮通过 `language-*` CSS class 输出，需宿主页面引入 highlight.js 或 Prism.js
+- `wwwroot/pisharp-webui.js` 提供 `PiSharpWebUi.highlightAll()` 自动检测并高亮
 
 ## 验证
 

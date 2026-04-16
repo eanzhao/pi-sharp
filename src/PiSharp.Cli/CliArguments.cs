@@ -19,6 +19,8 @@ public sealed class CliArguments
 
     public bool Print { get; init; }
 
+    public bool Json { get; init; }
+
     public bool Verbose { get; init; }
 
     public bool ListModels { get; init; }
@@ -86,6 +88,7 @@ public static class CliArgumentsParser
         var help = false;
         var version = false;
         var print = false;
+        var json = false;
         var verbose = false;
         var listModels = false;
         string? listModelsFilter = null;
@@ -121,6 +124,12 @@ public static class CliArgumentsParser
             if (argument is "--print" or "-p")
             {
                 print = true;
+                continue;
+            }
+
+            if (argument == "--json")
+            {
+                json = true;
                 continue;
             }
 
@@ -302,6 +311,7 @@ public static class CliArgumentsParser
             Help = help,
             Version = version,
             Print = print,
+            Json = json,
             Verbose = verbose,
             ListModels = listModels,
             ListModelsFilter = listModelsFilter,
@@ -350,6 +360,7 @@ Options:
   --no-session                   Disable session persistence for this run
   --list-models [pattern]        List known models, optionally filtered
   --print, -p                    Print mode (current default behavior)
+  --json                         Output response as JSON (machine-readable)
   --verbose                      Print tool execution diagnostics to stderr
   --help, -h                     Show this help text
   --version, -v                  Show version

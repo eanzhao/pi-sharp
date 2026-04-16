@@ -1,5 +1,8 @@
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using PiSharp.Agent;
 using PiSharp.Ai;
 using PiSharp.CodingAgent;
@@ -197,8 +200,11 @@ public sealed class CliApplication
             var appendSystemPrompt = BuildAppendSystemPrompt(parsed.AppendSystemPromptInputs, workingDirectory);
             var activeToolNames = ResolveActiveToolNames(parsed, persistedSource?.Context?.ToolNames);
 
+            var rawClient = runConfiguration.ProviderFactory.Create(runConfiguration.Model.Id, runConfiguration.ApiKey);
+            var chatClient = parsed.Verbose ? WrapWithMiddleware(rawClient, verbose: true) : rawClient;
+
             using var session = await CodingAgentSession.CreateAsync(
-                    runConfiguration.ProviderFactory.Create(runConfiguration.Model.Id, runConfiguration.ApiKey),
+                    chatClient,
                     new CodingAgentSessionOptions
                     {
                         Model = runConfiguration.Model,
@@ -233,6 +239,12 @@ public sealed class CliApplication
                     .ConfigureAwait(false);
             }
 
+            if (parsed.Json)
+            {
+                return await RunJsonModeAsync(session, persistenceManager, initialPrompt!, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             return await RunPrintModeAsync(session, persistenceManager, initialPrompt!, parsed.Verbose, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -241,6 +253,43 @@ public sealed class CliApplication
             await _environment.Error.WriteLineAsync(exception.Message).ConfigureAwait(false);
             return 1;
         }
+    }
+
+    private async Task<int> RunJsonModeAsync(
+        CodingAgentSession session,
+        SessionManager? persistenceManager,
+        string prompt,
+        CancellationToken cancellationToken)
+    {
+        var persistedMessageCount = session.State.Messages.Count;
+        await session.PromptAsync(prompt, cancellationToken: cancellationToken).ConfigureAwait(false);
+        PersistNewMessages(persistenceManager, session, ref persistedMessageCount);
+
+        var assistantMessages = session.State.Messages
+            .Where(static message => message.Role == ChatRole.Assistant)
+            .ToArray();
+
+        var lastAssistant = assistantMessages.LastOrDefault();
+        var jsonResponse = new JsonOutputResponse
+        {
+            Role = lastAssistant?.Role.Value ?? "assistant",
+            Content = lastAssistant?.Text ?? string.Empty,
+            Model = session.State.Model?.Id,
+            ToolCalls = assistantMessages
+                .SelectMany(static message => message.Contents.OfType<FunctionCallContent>())
+                .Select(static toolCall => new JsonToolCall
+                {
+                    Id = toolCall.CallId,
+                    Name = toolCall.Name,
+                    Arguments = toolCall.Arguments,
+                })
+                .ToArray(),
+            MessageCount = session.State.Messages.Count,
+        };
+
+        var json = JsonSerializer.Serialize(jsonResponse, JsonOutputOptions);
+        await _environment.Output.WriteLineAsync(json).ConfigureAwait(false);
+        return 0;
     }
 
     private async Task<int> RunPrintModeAsync(
@@ -621,6 +670,50 @@ public sealed class CliApplication
         }
 
         return value.ToString();
+    }
+
+    private static IChatClient WrapWithMiddleware(IChatClient inner, bool verbose)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging(builder =>
+        {
+            builder.SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Warning);
+            builder.AddSimpleConsole(options =>
+            {
+                options.SingleLine = true;
+                options.TimestampFormat = "HH:mm:ss ";
+            });
+        });
+
+        var serviceProvider = services.BuildServiceProvider();
+        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
+
+        return new ChatClientBuilder(inner)
+            .UseLogging(loggerFactory)
+            .Build();
+    }
+
+    private static readonly JsonSerializerOptions JsonOutputOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        WriteIndented = true,
+    };
+
+    private sealed class JsonOutputResponse
+    {
+        public string Role { get; init; } = "assistant";
+        public string Content { get; init; } = string.Empty;
+        public string? Model { get; init; }
+        public JsonToolCall[] ToolCalls { get; init; } = [];
+        public int MessageCount { get; init; }
+    }
+
+    private sealed class JsonToolCall
+    {
+        public string? Id { get; init; }
+        public string? Name { get; init; }
+        public IDictionary<string, object?>? Arguments { get; init; }
     }
 
     private sealed record PersistedSessionSource(SessionManager Manager, SessionContext Context);

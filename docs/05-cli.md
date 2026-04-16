@@ -28,13 +28,15 @@ phase 05 follow-up 中缺失的三块能力：
 
 ## 当前范围
 
-- `CliArgumentsParser`
-- `CliApplication`
+- `CliArgumentsParser`（含 `--json` 机器可读输出模式）
+- `CliApplication`（print / json / interactive 三种输出模式）
 - `Program.cs`
 - `CliInteractive*`
 - `CodingAgentContextLoader`
 - `CodingAgentRuntimeBootstrap`
 - `SessionManager`
+- DI 容器（`Microsoft.Extensions.DependencyInjection`）
+- MEAI middleware pipeline（`ChatClientBuilder` + `UseLogging`）
 - `PiSharp.Cli.Tests`
 
 ## 设计
@@ -167,13 +169,33 @@ resume 和 fork 后继续作为上下文恢复。
 - provider catalog 仍是静态内置，不做远程模型发现
 - `@file` 仍按文本文件处理，不做图片输入
 
+### JSON 输出模式
+
+`--json` flag 将最终响应序列化为机器可读的 JSON 输出，包含：
+
+- `role`：消息角色
+- `content`：最终 assistant 回复文本
+- `model`：使用的模型 ID
+- `toolCalls`：所有 tool call 记录（id, name, arguments）
+- `messageCount`：总消息数
+
+适用于管道集成和自动化场景。
+
+### DI 容器与 MEAI Middleware
+
+在 `--verbose` 模式下，CLI 通过 `Microsoft.Extensions.DependencyInjection` 构建 `IServiceProvider`，
+配置 `ILoggerFactory`，并通过 `ChatClientBuilder.UseLogging()` 将 MEAI 的日志 middleware 注入到
+`IChatClient` pipeline 中。这为后续添加 OpenTelemetry、缓存等 middleware 提供了基础。
+
 ## 验证
 
 测试覆盖：
 
-- 参数解析和冲突 flag 校验
+- 参数解析和冲突 flag 校验（含 `--json`）
 - shared bootstrap 的 provider/api-key/context/session-dir 解析
 - print mode 的 context 注入和模型列表输出
+- JSON 输出模式的结构化响应
 - persisted session 的 resume / fork / invalid selector
 - interactive mode 在 TTY 下的最小编排
 - `SessionManager` 的 JSONL 持久化与 tool-message round-trip
+- MEAI middleware pipeline 通过 verbose 模式激活
