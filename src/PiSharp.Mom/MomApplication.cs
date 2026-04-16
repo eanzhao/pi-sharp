@@ -307,7 +307,8 @@ Examples:
         var runtimeStatsFound = File.Exists(statsPath);
         MomRuntimeStats? runtimeStats = runtimeStatsFound ? new MomRuntimeStats(statsPath) : null;
         var snapshot = runtimeStats?.Snapshot();
-        var workspaceMetadataIndex = LoadWorkspaceMetadataIndex(workspaceDirectory);
+        var workspaceMetadata = LoadWorkspaceMetadataSummary(workspaceDirectory);
+        var workspaceMetadataIndex = workspaceMetadata?.WorkspaceIndex;
         var channelStats = string.IsNullOrWhiteSpace(options.StatsChannelId)
             ? null
             : BuildChannelStats(workspaceDirectory, options.StatsChannelId!, workspaceMetadataIndex);
@@ -321,6 +322,7 @@ Examples:
                         runtimeStatsFound,
                         summary = runtimeStats?.FormatSummary(),
                         snapshot,
+                        slackMetadata = BuildWorkspaceMetadataJson(workspaceMetadata),
                         channel = channelStats,
                     },
                     StatsJsonOptions))
@@ -340,6 +342,8 @@ Examples:
         {
             await _environment.Output.WriteLineAsync($"No runtime stats found in {workspaceDirectory}").ConfigureAwait(false);
         }
+
+        await _environment.Output.WriteLineAsync(FormatWorkspaceMetadataSummary(workspaceMetadata)).ConfigureAwait(false);
 
         if (channelStats is not null)
         {
@@ -625,14 +629,32 @@ Examples:
             $"Local files: sessions={channelStats.SessionFileCount} attachment_files={channelStats.AttachmentFileCount} scratch_files={channelStats.ScratchFileCount} channel_memory={channelStats.ChannelMemoryExists}",
         ];
 
-    private static MomSlackWorkspaceIndex? LoadWorkspaceMetadataIndex(string workspaceDirectory)
+    private static WorkspaceMetadataSummary? LoadWorkspaceMetadataSummary(string workspaceDirectory)
     {
         var snapshot = MomSlackMetadataSnapshotStore.Load(
             Path.Combine(workspaceDirectory, MomDefaults.SlackMetadataFileName));
         return snapshot is null
             ? null
-            : new MomSlackWorkspaceIndex(snapshot.Users, snapshot.Channels);
+            : new WorkspaceMetadataSummary(
+                snapshot.RefreshedAt,
+                snapshot.Users.Count,
+                snapshot.Channels.Count,
+                new MomSlackWorkspaceIndex(snapshot.Users, snapshot.Channels));
     }
+
+    private static string FormatWorkspaceMetadataSummary(WorkspaceMetadataSummary? workspaceMetadata) =>
+        workspaceMetadata is null
+            ? "Slack metadata: found=False"
+            : $"Slack metadata: found=True refreshed_at={FormatTimestamp(workspaceMetadata.RefreshedAt)} users={workspaceMetadata.UserCount} channels={workspaceMetadata.ChannelCount}";
+
+    private static object BuildWorkspaceMetadataJson(WorkspaceMetadataSummary? workspaceMetadata) =>
+        workspaceMetadata is null
+            ? new WorkspaceMetadataJson(false, null, null, null)
+            : new WorkspaceMetadataJson(
+                true,
+                workspaceMetadata.RefreshedAt,
+                workspaceMetadata.UserCount,
+                workspaceMetadata.ChannelCount);
 
     private static string ResolveUserLabel(
         MomLoggedMessage entry,
@@ -684,4 +706,16 @@ Examples:
         int SessionFileCount,
         bool ChannelMemoryExists,
         int ScratchFileCount);
+
+    private sealed record WorkspaceMetadataSummary(
+        DateTimeOffset RefreshedAt,
+        int UserCount,
+        int ChannelCount,
+        MomSlackWorkspaceIndex WorkspaceIndex);
+
+    private sealed record WorkspaceMetadataJson(
+        bool Found,
+        DateTimeOffset? RefreshedAt,
+        int? UserCount,
+        int? ChannelCount);
 }

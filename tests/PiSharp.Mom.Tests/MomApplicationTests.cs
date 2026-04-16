@@ -215,6 +215,7 @@ public sealed class MomApplicationTests
             Assert.Equal(0, exitCode);
             var rendered = output.ToString();
             Assert.Contains($"No runtime stats found in {Path.GetFullPath(tempDirectory)}", rendered);
+            Assert.Contains("Slack metadata: found=True refreshed_at=2026-04-16T01:00:00.0000000+00:00 users=1 channels=1", rendered);
             Assert.Contains("Channel: general (C123)", rendered);
             Assert.Contains("Log: found=True messages=1 user=1 bot=0 attachments=1", rendered);
             Assert.Contains("Latest logged message: ts=12345.1000", rendered);
@@ -286,6 +287,11 @@ public sealed class MomApplicationTests
             Assert.Equal("alerts (C456)", snapshot.GetProperty("lastBootstrapBackfillFailureChannel").GetString());
             Assert.Equal("timeout", snapshot.GetProperty("lastBootstrapBackfillFailureKind").GetString());
             Assert.Equal("bootstrap timed out", snapshot.GetProperty("lastBootstrapBackfillFailureReason").GetString());
+            var slackMetadata = root.GetProperty("slackMetadata");
+            Assert.True(slackMetadata.GetProperty("found").GetBoolean());
+            Assert.Equal("2026-04-16T01:00:00+00:00", slackMetadata.GetProperty("refreshedAt").GetString());
+            Assert.Equal(1, slackMetadata.GetProperty("userCount").GetInt32());
+            Assert.Equal(1, slackMetadata.GetProperty("channelCount").GetInt32());
             var channel = root.GetProperty("channel");
             Assert.Equal("C123", channel.GetProperty("channelId").GetString());
             Assert.Equal("general", channel.GetProperty("channelName").GetString());
@@ -330,6 +336,7 @@ public sealed class MomApplicationTests
             Assert.False(root.GetProperty("runtimeStatsFound").GetBoolean());
             Assert.Equal(JsonValueKind.Null, root.GetProperty("summary").ValueKind);
             Assert.Equal(JsonValueKind.Null, root.GetProperty("snapshot").ValueKind);
+            Assert.False(root.GetProperty("slackMetadata").GetProperty("found").GetBoolean());
         }
         finally
         {
