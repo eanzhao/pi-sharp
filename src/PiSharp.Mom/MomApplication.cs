@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Globalization;
+using System.Text.Json;
 using PiSharp.CodingAgent;
 
 namespace PiSharp.Mom;
@@ -13,6 +14,8 @@ public enum MomCommandKind
 public sealed record MomCommandLineOptions
 {
     public MomCommandKind Command { get; init; } = MomCommandKind.RunBot;
+
+    public bool JsonOutput { get; init; }
 
     public string? WorkspaceDirectory { get; init; }
 
@@ -29,6 +32,12 @@ public sealed record MomCommandLineOptions
 
 public sealed class MomApplication
 {
+    private static readonly JsonSerializerOptions StatsJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+    };
+
     private readonly MomConsoleEnvironment _environment;
     private readonly string _appName;
     private readonly bool _namespaced;
@@ -142,7 +151,8 @@ Usage:
   {GetUsage(appName, namespaced, MomCommandKind.ShowStats)}
 
 Commands:
-  stats <workspace-directory>   Print persisted runtime stats for a mom workspace
+  stats [--json] <workspace-directory>
+                                Print persisted runtime stats for a mom workspace
 
 Options:
   --provider <name>          Override provider from settings/environment
@@ -156,6 +166,7 @@ Options:
 Examples:
   {rootCommand} ./mom-data
   {rootCommand} stats ./mom-data
+  {rootCommand} stats --json ./mom-data
   {rootCommand} --provider anthropic --model claude-3-7-sonnet-latest ./mom-data
 """;
     }
@@ -171,8 +182,14 @@ Examples:
 Usage:
   {GetUsage(appName, namespaced, MomCommandKind.ShowStats)}
 
+Options:
+  --json                    Output runtime stats as JSON
+  -h, --help                Show help
+  --version                 Show version
+
 Examples:
   {rootCommand} stats ./mom-data
+  {rootCommand} stats --json ./mom-data
 """;
     }
 
@@ -277,12 +294,40 @@ Examples:
         var statsPath = Path.Combine(workspaceDirectory, MomDefaults.RuntimeStatsFileName);
         if (!File.Exists(statsPath))
         {
+            if (options.JsonOutput)
+            {
+                await _environment.Output.WriteLineAsync(JsonSerializer.Serialize(
+                        new
+                        {
+                            workspaceDirectory,
+                            runtimeStatsFound = false,
+                        },
+                        StatsJsonOptions))
+                    .ConfigureAwait(false);
+                return 0;
+            }
+
             await _environment.Output.WriteLineAsync($"No runtime stats found in {workspaceDirectory}").ConfigureAwait(false);
             return 0;
         }
 
         var runtimeStats = new MomRuntimeStats(statsPath);
         var snapshot = runtimeStats.Snapshot();
+        if (options.JsonOutput)
+        {
+            await _environment.Output.WriteLineAsync(JsonSerializer.Serialize(
+                    new
+                    {
+                        workspaceDirectory,
+                        runtimeStatsFound = true,
+                        summary = runtimeStats.FormatSummary(),
+                        snapshot,
+                    },
+                    StatsJsonOptions))
+                .ConfigureAwait(false);
+            return 0;
+        }
+
         foreach (var line in BuildStatsReport(workspaceDirectory, runtimeStats, snapshot))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -356,9 +401,16 @@ Examples:
     private static MomCommandLineOptions ParseStatsArguments(IReadOnlyList<string> args)
     {
         string? workspaceDirectory = null;
+        var jsonOutput = false;
 
         for (var index = 0; index < args.Count; index++)
         {
+            if (string.Equals(args[index], "--json", StringComparison.Ordinal))
+            {
+                jsonOutput = true;
+                continue;
+            }
+
             if (args[index].StartsWith("--", StringComparison.Ordinal))
             {
                 throw new InvalidOperationException($"Unknown option '{args[index]}'.");
@@ -370,6 +422,7 @@ Examples:
         return new MomCommandLineOptions
         {
             Command = MomCommandKind.ShowStats,
+            JsonOutput = jsonOutput,
             WorkspaceDirectory = workspaceDirectory,
         };
     }
@@ -390,7 +443,7 @@ Examples:
         var rootCommand = namespaced ? $"{appName} mom" : appName;
         return command switch
         {
-            MomCommandKind.ShowStats => $"{rootCommand} stats <workspace-directory>",
+            MomCommandKind.ShowStats => $"{rootCommand} stats [--json] <workspace-directory>",
             _ => $"{rootCommand} [--provider <name>] [--model <id>] [--api-key <key>] [--slack-app-token <xapp>] [--slack-bot-token <xoxb>] <workspace-directory>",
         };
     }

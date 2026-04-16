@@ -1,3 +1,4 @@
+using System.Text.Json;
 using PiSharp.CodingAgent;
 using PiSharp.Mom;
 
@@ -59,11 +60,12 @@ public sealed class MomApplicationTests
                 return Task.FromResult(0);
             });
 
-        var exitCode = await application.RunAsync(["stats", "./mom-data"]);
+        var exitCode = await application.RunAsync(["stats", "--json", "./mom-data"]);
 
         Assert.Equal(0, exitCode);
         Assert.NotNull(captured);
         Assert.Equal(MomCommandKind.ShowStats, captured!.Command);
+        Assert.True(captured.JsonOutput);
         Assert.Equal("./mom-data", captured.WorkspaceDirectory);
     }
 
@@ -107,6 +109,7 @@ public sealed class MomApplicationTests
 
         Assert.Equal(0, exitCode);
         Assert.Contains("pisharp mom stats", output.ToString());
+        Assert.Contains("--json", output.ToString());
     }
 
     [Fact]
@@ -158,6 +161,90 @@ public sealed class MomApplicationTests
             Assert.Contains("Bootstrap backfill totals: count=1 messages=3 failures=1", rendered);
             Assert.Contains("Last bootstrap failure: at=2026-04-16T01:04:06.0000000+00:00 channel=alerts (C456) kind=auth reason=Slack API 'conversations.history' failed: invalid_auth", rendered);
             Assert.Contains("Last reconnect-gap failure: at=2026-04-16T01:05:07.0000000+00:00 channel=alerts (C456) kind=timeout reason=gap down", rendered);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDirectory))
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_StatsCommand_CanPrintJson()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"pisharp-mom-json-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        try
+        {
+            var stats = new MomRuntimeStats(Path.Combine(tempDirectory, MomDefaults.RuntimeStatsFileName));
+            stats.RecordStartupBackfill(
+                new MomBackfillResult(2, 5),
+                new DateTimeOffset(2026, 4, 16, 1, 2, 3, TimeSpan.Zero));
+            stats.RecordBootstrapBackfillFailure(
+                "alerts (C456)",
+                new TimeoutException("bootstrap timed out"),
+                new DateTimeOffset(2026, 4, 16, 1, 4, 6, TimeSpan.Zero));
+
+            var application = new MomApplication(
+                new MomConsoleEnvironment(
+                    new StringReader(string.Empty),
+                    output,
+                    error,
+                    Directory.GetCurrentDirectory()));
+
+            var exitCode = await application.RunAsync(["stats", "--json", tempDirectory]);
+
+            Assert.Equal(0, exitCode);
+            using var document = JsonDocument.Parse(output.ToString());
+            var root = document.RootElement;
+            Assert.Equal(Path.GetFullPath(tempDirectory), root.GetProperty("workspaceDirectory").GetString());
+            Assert.True(root.GetProperty("runtimeStatsFound").GetBoolean());
+            Assert.Contains("Runtime stats:", root.GetProperty("summary").GetString());
+            var snapshot = root.GetProperty("snapshot");
+            Assert.Equal(2, snapshot.GetProperty("startupBackfillChannels").GetInt32());
+            Assert.Equal("alerts (C456)", snapshot.GetProperty("lastBootstrapBackfillFailureChannel").GetString());
+            Assert.Equal("timeout", snapshot.GetProperty("lastBootstrapBackfillFailureKind").GetString());
+            Assert.Equal("bootstrap timed out", snapshot.GetProperty("lastBootstrapBackfillFailureReason").GetString());
+        }
+        finally
+        {
+            if (Directory.Exists(tempDirectory))
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_StatsCommand_JsonOutputReportsMissingStatsFile()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"pisharp-mom-missing-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        try
+        {
+            var application = new MomApplication(
+                new MomConsoleEnvironment(
+                    new StringReader(string.Empty),
+                    output,
+                    error,
+                    Directory.GetCurrentDirectory()));
+
+            var exitCode = await application.RunAsync(["stats", "--json", tempDirectory]);
+
+            Assert.Equal(0, exitCode);
+            using var document = JsonDocument.Parse(output.ToString());
+            var root = document.RootElement;
+            Assert.Equal(Path.GetFullPath(tempDirectory), root.GetProperty("workspaceDirectory").GetString());
+            Assert.False(root.GetProperty("runtimeStatsFound").GetBoolean());
+            Assert.False(root.TryGetProperty("summary", out _));
         }
         finally
         {

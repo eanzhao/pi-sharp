@@ -66,7 +66,7 @@ TS 版 `mom` 把 Slack、queue、context、agent orchestration 写在一起。C#
 - `<workspace>/<channel>/scratch/`
 - `<workspace>/<channel>/.pi-sharp/sessions/*.jsonl`
 
-phase 08 现在也提供了一个只读入口：`pisharp mom stats <workspace>`（或 `PiSharp.Mom` 直接 `stats <workspace>`），把 `runtime-stats.json` 展开成人类可读的摘要，方便现场查看最近一次 backfill / reconnect 成功或失败，而不用手翻 JSON。
+phase 08 现在也提供了一个只读入口：`pisharp mom stats <workspace>`（或 `PiSharp.Mom` 直接 `stats <workspace>`），把 `runtime-stats.json` 展开成人类可读的摘要，方便现场查看最近一次 backfill / reconnect 成功或失败，而不用手翻 JSON；如果要机器读，也支持 `pisharp mom stats --json <workspace>`。
 
 和 TS 版不同的是，这里没有额外引入独立的 `context.jsonl` schema，而是直接复用现有 `SessionManager`：
 
