@@ -412,6 +412,86 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
     }
 
     [Fact]
+    public async Task DispatchAsync_TracksBootstrapBackfillFailureStats()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("ack"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var notices = new List<string>();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        using var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            throw new InvalidOperationException("backfill down")));
+        using var historyClient = new SlackWebApiClient("xoxb-test", httpClient);
+        using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
+        var backfiller = new MomLogBackfiller(historyClient, store);
+        var runtimeStats = new MomRuntimeStats();
+        var turnProcessor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+        var runtime = new MomWorkspaceRuntime(
+            turnProcessor,
+            slackClient,
+            store,
+            backfiller: backfiller,
+            botUserId: "B123",
+            reportNoticeAsync: (message, _) =>
+            {
+                notices.Add(message);
+                return Task.CompletedTask;
+            },
+            runtimeStats: runtimeStats);
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> summarize after bootstrap failure",
+            "12345.2000",
+            "app_mention",
+            IsDirectMessage: false));
+
+        await runtime.WaitForIdleAsync("C123");
+
+        var request = Assert.Single(chatClient.Requests);
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U123]: summarize after bootstrap failure");
+
+        var logLines = File.ReadAllLines(Path.Combine(_workspaceDirectory, "C123", "log.jsonl"));
+        Assert.Equal(2, logLines.Length);
+        Assert.Contains("summarize after bootstrap failure", logLines[0]);
+        Assert.Contains("ack", logLines[1]);
+        Assert.Contains(notices, notice => notice == "Bootstrap backfill failed for C123: backfill down");
+        var snapshot = runtimeStats.Snapshot();
+        Assert.Equal(0, snapshot.BootstrapBackfillCount);
+        Assert.Equal(0, snapshot.BootstrapBackfillMessages);
+        Assert.Equal(1, snapshot.BootstrapBackfillFailures);
+        Assert.Null(snapshot.LastBootstrapBackfillAt);
+        Assert.Null(snapshot.LastBootstrapBackfillChannel);
+        Assert.Equal("C123", snapshot.LastBootstrapBackfillFailureChannel);
+        Assert.NotNull(snapshot.LastBootstrapBackfillFailureAt);
+    }
+
+    [Fact]
     public async Task DispatchAsync_BackfillsReconnectGapForExistingChannel()
     {
         var chatClient = new FakeChatClient(
@@ -532,6 +612,98 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Equal(0, snapshot.ReconnectGapBackfillFailures);
         Assert.Equal("C123", snapshot.LastReconnectGapBackfillChannel);
         Assert.NotNull(snapshot.LastReconnectGapBackfillAt);
+    }
+
+    [Fact]
+    public async Task DispatchAsync_TracksReconnectGapBackfillFailureStats()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("ack"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var notices = new List<string>();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        using var httpClient = new HttpClient(new StubHttpMessageHandler(_ =>
+            throw new InvalidOperationException("gap backfill down")));
+        using var historyClient = new SlackWebApiClient("xoxb-test", httpClient);
+        using var store = new MomChannelStore(_workspaceDirectory, "xoxb-test", httpClient);
+        await store.LogIncomingEventAsync(new SlackIncomingEvent(
+            "C123",
+            "U999",
+            "Existing local context",
+            "12345.1000",
+            "message",
+            IsDirectMessage: false,
+            RequiresResponse: false));
+
+        var backfiller = new MomLogBackfiller(historyClient, store);
+        var runtimeStats = new MomRuntimeStats();
+        var turnProcessor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+        var runtime = new MomWorkspaceRuntime(
+            turnProcessor,
+            slackClient,
+            store,
+            backfiller: backfiller,
+            botUserId: "B123",
+            reportNoticeAsync: (message, _) =>
+            {
+                notices.Add(message);
+                return Task.CompletedTask;
+            },
+            runtimeStats: runtimeStats);
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> summarize reconnect failure",
+            "12345.3000",
+            "app_mention",
+            IsDirectMessage: false,
+            ConnectionGeneration: 1));
+
+        await runtime.WaitForIdleAsync("C123");
+
+        var request = Assert.Single(chatClient.Requests);
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U999]: Existing local context");
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U123]: summarize reconnect failure");
+
+        var logLines = File.ReadAllLines(Path.Combine(_workspaceDirectory, "C123", "log.jsonl"));
+        Assert.Equal(3, logLines.Length);
+        Assert.Contains("Existing local context", logLines[0]);
+        Assert.Contains("summarize reconnect failure", logLines[1]);
+        Assert.Contains("ack", logLines[2]);
+        Assert.Contains(notices, notice => notice == "Reconnect gap backfill failed for C123 after reconnect #1: gap backfill down");
+        var snapshot = runtimeStats.Snapshot();
+        Assert.Equal(0, snapshot.ReconnectGapBackfillCount);
+        Assert.Equal(0, snapshot.ReconnectGapBackfillMessages);
+        Assert.Equal(1, snapshot.ReconnectGapBackfillFailures);
+        Assert.Null(snapshot.LastReconnectGapBackfillAt);
+        Assert.Null(snapshot.LastReconnectGapBackfillChannel);
+        Assert.Equal("C123", snapshot.LastReconnectGapBackfillFailureChannel);
+        Assert.NotNull(snapshot.LastReconnectGapBackfillFailureAt);
     }
 
     private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>
