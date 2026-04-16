@@ -340,7 +340,7 @@ public static class CliArgumentsParser
 {appName} - PiSharp coding agent CLI
 
 Usage:
-  {appName} pods [setup|active|remove|start|stop|list|logs|agent|ssh|shell] ...
+  {appName} pods [setup|active|remove|start|stop|list|doctor|logs|agent|ssh|shell] ...
   {appName} [options] [@files...] [message...]
 
 Options:
@@ -368,6 +368,7 @@ Options:
 Examples:
   {appName} pods setup dc1 "ssh root@1.2.3.4" --models-path /workspace
   {appName} pods start Qwen/Qwen2.5-Coder-32B-Instruct --name qwen --detach
+  {appName} pods doctor
   {appName} pods logs qwen --tail 200 --no-follow
   {appName} "Summarize the repository"
   {appName}                      Start interactive mode when stdin is a TTY

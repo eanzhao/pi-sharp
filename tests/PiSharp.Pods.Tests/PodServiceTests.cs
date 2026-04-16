@@ -240,6 +240,75 @@ public sealed class PodServiceTests : IDisposable
         Assert.Contains(transport.StreamingInvocations, invocation => invocation.Command == "tail -n 25 ~/.vllm_logs/qwen.log");
     }
 
+    [Fact]
+    public async Task RunDoctorAsync_ReturnsHealthyChecksForConfiguredPod()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@pod.example.com",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal),
+                ModelsPath = "/workspace",
+                VllmVersion = PodsDefaults.VllmNightly,
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("SSH OK", string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("0, NVIDIA H100, 80 GB\n", string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("/dev/sda1  500G  100G  400G  20% /workspace\n", string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("Python 3.12.8\nvLLM 0.10.1\n", string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("4\n", string.Empty, 0));
+
+        var service = new PodService(store, transport);
+        var report = await service.RunDoctorAsync();
+
+        Assert.False(report.HasFailures);
+        Assert.Equal("dc1", report.PodName);
+        Assert.Equal("pod.example.com", report.Host);
+        Assert.Contains(report.Checks, check => check.Name == "ssh" && check.Status == PodDoctorCheckStatus.Pass);
+        Assert.Contains(report.Checks, check => check.Name == "runtime" && check.Summary.Contains("Python 3.12.8", StringComparison.Ordinal));
+        Assert.Contains(report.Checks, check => check.Name == "deployments" && check.Summary.Contains("No deployments configured", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunDoctorAsync_ReportsSshFailureAndSkipsRemoteChecks()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@pod.example.com",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal)
+                {
+                    ["qwen"] = new()
+                    {
+                        ModelId = "Qwen/Qwen2.5-Coder-32B-Instruct",
+                        Port = 8001,
+                        GpuIds = [0],
+                        ProcessId = 1234,
+                    },
+                },
+                ModelsPath = "/workspace",
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.ExecuteResponses.Enqueue(new SshCommandResult(string.Empty, "Connection refused", 255));
+
+        var service = new PodService(store, transport);
+        var report = await service.RunDoctorAsync();
+
+        Assert.True(report.HasFailures);
+        Assert.Contains(report.Checks, check => check.Name == "ssh" && check.Status == PodDoctorCheckStatus.Fail);
+        Assert.Single(report.Deployments);
+        Assert.Equal("unknown", report.Deployments[0].Status);
+        Assert.Single(transport.ExecuteInvocations);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_rootDirectory))

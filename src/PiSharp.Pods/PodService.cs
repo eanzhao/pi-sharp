@@ -70,6 +70,40 @@ public sealed class PodLogsRequest
     public bool Follow { get; init; } = true;
 }
 
+public sealed class PodDoctorRequest
+{
+    public string? PodName { get; init; }
+
+    public bool VerifyProcesses { get; init; } = true;
+}
+
+public enum PodDoctorCheckStatus
+{
+    Pass,
+    Warning,
+    Fail,
+}
+
+public sealed record PodDoctorCheck(
+    string Name,
+    PodDoctorCheckStatus Status,
+    string Summary,
+    string? Details = null);
+
+public sealed record PodDoctorReport(
+    string PodName,
+    string Host,
+    string SshCommand,
+    string? ModelsPath,
+    string VllmVersion,
+    IReadOnlyList<PodDoctorCheck> Checks,
+    IReadOnlyList<PodModelStatus> Deployments)
+{
+    public bool HasFailures => Checks.Any(static check => check.Status == PodDoctorCheckStatus.Fail);
+
+    public bool HasWarnings => Checks.Any(static check => check.Status == PodDoctorCheckStatus.Warning);
+}
+
 public sealed class PodService
 {
     private const string SetupScriptRemotePath = "/tmp/pisharp_pod_setup.sh";
@@ -128,6 +162,90 @@ public sealed class PodService
             (chunk, ct) => ForwardChunkAsync(chunk, outputHandler, ct),
             new SshStreamingOptions { ForceTty = forceTty },
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<PodDoctorReport> RunDoctorAsync(
+        PodDoctorRequest? request = null,
+        CancellationToken cancellationToken = default)
+    {
+        request ??= new PodDoctorRequest();
+
+        var podReference = ResolvePod(request.PodName);
+        var pod = podReference.Pod;
+        var host = TryExtractHost(pod.SshCommand, out var extractedHost) ? extractedHost : "unknown";
+        var checks = new List<PodDoctorCheck>();
+
+        var deploymentCount = pod.Models.Count;
+        PodDoctorCheckStatus configurationStatus;
+        string configurationSummary;
+        if (string.IsNullOrWhiteSpace(pod.ModelsPath))
+        {
+            configurationStatus = PodDoctorCheckStatus.Fail;
+            configurationSummary = "Models path is not configured.";
+        }
+        else if (!TryExtractHost(pod.SshCommand, out _))
+        {
+            configurationStatus = PodDoctorCheckStatus.Fail;
+            configurationSummary = "SSH command is not valid enough to extract a host.";
+        }
+        else
+        {
+            configurationStatus = PodDoctorCheckStatus.Pass;
+            configurationSummary =
+                $"Models path '{pod.ModelsPath}', vLLM '{pod.VllmVersion}', {deploymentCount} deployment(s) configured locally.";
+        }
+
+        var configurationDetails = $"SSH: {pod.SshCommand}";
+        if (pod.Gpus.Count > 0)
+        {
+            configurationDetails += $"{Environment.NewLine}Cached GPUs: {string.Join(", ", pod.Gpus.Select(static gpu => $"{gpu.Id}:{gpu.Name}"))}";
+        }
+
+        checks.Add(new PodDoctorCheck("configuration", configurationStatus, configurationSummary, configurationDetails));
+
+        SshCommandResult sshResult;
+        try
+        {
+            sshResult = await _sshTransport.ExecuteAsync(
+                pod.SshCommand,
+                "printf 'SSH OK'",
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            checks.Add(new PodDoctorCheck("ssh", PodDoctorCheckStatus.Fail, $"SSH command failed: {exception.Message}"));
+            return CreateDoctorReport(podReference, host, checks, CreateStoredModelStatuses(podReference, host));
+        }
+
+        if (sshResult.ExitCode != 0)
+        {
+            checks.Add(new PodDoctorCheck("ssh", PodDoctorCheckStatus.Fail, $"SSH connectivity failed: {DescribeCommandFailure(sshResult)}"));
+            return CreateDoctorReport(podReference, host, checks, CreateStoredModelStatuses(podReference, host));
+        }
+
+        checks.Add(new PodDoctorCheck("ssh", PodDoctorCheckStatus.Pass, $"SSH connectivity OK ({host})"));
+
+        await AddGpuDoctorCheckAsync(podReference, checks, cancellationToken).ConfigureAwait(false);
+        await AddModelsPathDoctorCheckAsync(podReference, checks, cancellationToken).ConfigureAwait(false);
+        await AddRuntimeDoctorCheckAsync(podReference, checks, cancellationToken).ConfigureAwait(false);
+        await AddLogsDoctorCheckAsync(podReference, checks, cancellationToken).ConfigureAwait(false);
+
+        IReadOnlyList<PodModelStatus> deployments;
+        try
+        {
+            deployments = request.VerifyProcesses
+                ? await GetModelStatusesAsync(podReference.Name, verifyProcesses: true, cancellationToken).ConfigureAwait(false)
+                : CreateStoredModelStatuses(podReference, host);
+        }
+        catch (Exception exception)
+        {
+            checks.Add(new PodDoctorCheck("deployments", PodDoctorCheckStatus.Fail, $"Failed to inspect deployments: {exception.Message}"));
+            deployments = CreateStoredModelStatuses(podReference, host);
+            return CreateDoctorReport(podReference, host, checks, deployments);
+        }
+
+        checks.Add(BuildDeploymentsDoctorCheck(deployments, request.VerifyProcesses));
+        return CreateDoctorReport(podReference, host, checks, deployments);
     }
 
     public async Task<PodSetupResult> SetupPodAsync(
@@ -530,6 +648,304 @@ fi
         return string.Join(Environment.NewLine, lines);
     }
 
+    private static PodDoctorReport CreateDoctorReport(
+        PodReference podReference,
+        string host,
+        IReadOnlyList<PodDoctorCheck> checks,
+        IReadOnlyList<PodModelStatus> deployments) =>
+        new(
+            podReference.Name,
+            host,
+            podReference.Pod.SshCommand,
+            podReference.Pod.ModelsPath,
+            podReference.Pod.VllmVersion,
+            checks,
+            deployments);
+
+    private async Task AddGpuDoctorCheckAsync(
+        PodReference podReference,
+        ICollection<PodDoctorCheck> checks,
+        CancellationToken cancellationToken)
+    {
+        SshCommandResult result;
+        try
+        {
+            result = await _sshTransport.ExecuteAsync(
+                podReference.Pod.SshCommand,
+                "nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader",
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            checks.Add(new PodDoctorCheck("gpus", PodDoctorCheckStatus.Fail, $"Failed to query GPUs: {exception.Message}"));
+            return;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            checks.Add(new PodDoctorCheck("gpus", PodDoctorCheckStatus.Fail, $"GPU query failed: {DescribeCommandFailure(result)}"));
+            return;
+        }
+
+        var detectedGpus = ParseGpuInfos(result.StandardOutput);
+        if (detectedGpus.Count == 0)
+        {
+            checks.Add(new PodDoctorCheck("gpus", PodDoctorCheckStatus.Fail, "No GPUs detected by nvidia-smi."));
+            return;
+        }
+
+        var summary = $"{detectedGpus.Count} GPU(s) detected: {string.Join(", ", detectedGpus.Select(static gpu => gpu.Name).Distinct(StringComparer.Ordinal))}";
+        var details = string.Join(Environment.NewLine, detectedGpus.Select(static gpu => $"GPU {gpu.Id}: {gpu.Name} ({gpu.Memory})"));
+        var status = detectedGpus.Count != podReference.Pod.Gpus.Count && podReference.Pod.Gpus.Count > 0
+            ? PodDoctorCheckStatus.Warning
+            : PodDoctorCheckStatus.Pass;
+
+        if (status == PodDoctorCheckStatus.Warning)
+        {
+            summary += $" (cached config has {podReference.Pod.Gpus.Count})";
+        }
+
+        checks.Add(new PodDoctorCheck("gpus", status, summary, details));
+    }
+
+    private async Task AddModelsPathDoctorCheckAsync(
+        PodReference podReference,
+        ICollection<PodDoctorCheck> checks,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(podReference.Pod.ModelsPath))
+        {
+            checks.Add(new PodDoctorCheck("models-path", PodDoctorCheckStatus.Fail, "Models path is missing from local configuration."));
+            return;
+        }
+
+        var modelsPath = podReference.Pod.ModelsPath;
+        var command = $$"""
+if [ -d {{ShellQuote(modelsPath)}} ]; then
+  df -h {{ShellQuote(modelsPath)}} | tail -1
+else
+  echo "missing: {{modelsPath}}"
+  exit 2
+fi
+""";
+
+        SshCommandResult result;
+        try
+        {
+            result = await _sshTransport.ExecuteAsync(
+                podReference.Pod.SshCommand,
+                command,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            checks.Add(new PodDoctorCheck("models-path", PodDoctorCheckStatus.Fail, $"Failed to inspect models path: {exception.Message}"));
+            return;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            checks.Add(new PodDoctorCheck("models-path", PodDoctorCheckStatus.Fail, $"Models path check failed: {DescribeCommandFailure(result)}"));
+            return;
+        }
+
+        checks.Add(new PodDoctorCheck("models-path", PodDoctorCheckStatus.Pass, $"Models path '{modelsPath}' is available.", result.StandardOutput.Trim()));
+    }
+
+    private async Task AddRuntimeDoctorCheckAsync(
+        PodReference podReference,
+        ICollection<PodDoctorCheck> checks,
+        CancellationToken cancellationToken)
+    {
+        var command =
+            """
+if [ ! -x "$HOME/venv/bin/python" ]; then
+  echo "missing: $HOME/venv/bin/python"
+  exit 2
+fi
+
+"$HOME/venv/bin/python" - <<'__PI_SHARP_DOCTOR__'
+import sys
+import vllm
+
+print(f"Python {sys.version.split()[0]}")
+print(f"vLLM {getattr(vllm, '__version__', 'unknown')}")
+__PI_SHARP_DOCTOR__
+""";
+
+        SshCommandResult result;
+        try
+        {
+            result = await _sshTransport.ExecuteAsync(
+                podReference.Pod.SshCommand,
+                command,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            checks.Add(new PodDoctorCheck("runtime", PodDoctorCheckStatus.Fail, $"Failed to inspect Python/vLLM runtime: {exception.Message}"));
+            return;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            checks.Add(new PodDoctorCheck("runtime", PodDoctorCheckStatus.Fail, $"Runtime check failed: {DescribeCommandFailure(result)}"));
+            return;
+        }
+
+        var lines = result.StandardOutput
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var summary = lines.Length > 0
+            ? string.Join(", ", lines)
+            : "Python virtual environment and vLLM import are available.";
+
+        checks.Add(new PodDoctorCheck("runtime", PodDoctorCheckStatus.Pass, summary, result.StandardOutput.Trim()));
+    }
+
+    private async Task AddLogsDoctorCheckAsync(
+        PodReference podReference,
+        ICollection<PodDoctorCheck> checks,
+        CancellationToken cancellationToken)
+    {
+        var command =
+            """
+if [ -d "$HOME/.vllm_logs" ]; then
+  ls -1 "$HOME/.vllm_logs" 2>/dev/null | wc -l | tr -d ' '
+else
+  echo "missing: $HOME/.vllm_logs"
+  exit 2
+fi
+""";
+
+        SshCommandResult result;
+        try
+        {
+            result = await _sshTransport.ExecuteAsync(
+                podReference.Pod.SshCommand,
+                command,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            checks.Add(new PodDoctorCheck("logs", PodDoctorCheckStatus.Fail, $"Failed to inspect log directory: {exception.Message}"));
+            return;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            checks.Add(new PodDoctorCheck("logs", PodDoctorCheckStatus.Fail, $"Log directory check failed: {DescribeCommandFailure(result)}"));
+            return;
+        }
+
+        var entryCount = result.StandardOutput.Trim();
+        var summary = string.IsNullOrWhiteSpace(entryCount)
+            ? "~/.vllm_logs is available."
+            : $"~/.vllm_logs is available ({entryCount} entries).";
+
+        checks.Add(new PodDoctorCheck("logs", PodDoctorCheckStatus.Pass, summary));
+    }
+
+    private static PodDoctorCheck BuildDeploymentsDoctorCheck(IReadOnlyList<PodModelStatus> deployments, bool verifyProcesses)
+    {
+        if (deployments.Count == 0)
+        {
+            return new PodDoctorCheck("deployments", PodDoctorCheckStatus.Pass, "No deployments configured.");
+        }
+
+        if (!verifyProcesses)
+        {
+            return new PodDoctorCheck(
+                "deployments",
+                PodDoctorCheckStatus.Pass,
+                $"{deployments.Count} deployment(s) configured locally (process verification skipped).",
+                string.Join(Environment.NewLine, deployments.Select(static deployment => $"{deployment.Name}: {deployment.Deployment.ModelId}")));
+        }
+
+        var failures = deployments
+            .Where(static deployment => deployment.Status is "dead" or "crashed")
+            .ToArray();
+        if (failures.Length > 0)
+        {
+            return new PodDoctorCheck(
+                "deployments",
+                PodDoctorCheckStatus.Fail,
+                $"{failures.Length} deployment(s) are unhealthy.",
+                string.Join(Environment.NewLine, failures.Select(static deployment => $"{deployment.Name}: {deployment.Status}")));
+        }
+
+        var warnings = deployments
+            .Where(static deployment => deployment.Status is "starting" or "unknown")
+            .ToArray();
+        if (warnings.Length > 0)
+        {
+            return new PodDoctorCheck(
+                "deployments",
+                PodDoctorCheckStatus.Warning,
+                $"{warnings.Length} deployment(s) are not fully healthy yet.",
+                string.Join(Environment.NewLine, warnings.Select(static deployment => $"{deployment.Name}: {deployment.Status}")));
+        }
+
+        return new PodDoctorCheck(
+            "deployments",
+            PodDoctorCheckStatus.Pass,
+            $"{deployments.Count} deployment(s) responding normally.",
+            string.Join(Environment.NewLine, deployments.Select(static deployment => $"{deployment.Name}: {deployment.Status}")));
+    }
+
+    private static IReadOnlyList<PodModelStatus> CreateStoredModelStatuses(PodReference podReference, string host) =>
+        podReference.Pod.Models
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => new PodModelStatus(pair.Key, podReference.Name, host, pair.Value, "unknown"))
+            .ToArray();
+
+    private static bool TryExtractHost(string sshCommand, out string host)
+    {
+        try
+        {
+            host = SshCommandParser.ExtractHost(sshCommand);
+            return true;
+        }
+        catch
+        {
+            host = "unknown";
+            return false;
+        }
+    }
+
+    private static string DescribeCommandFailure(SshCommandResult result)
+    {
+        var detail = string.IsNullOrWhiteSpace(result.StandardError)
+            ? result.StandardOutput.Trim()
+            : result.StandardError.Trim();
+
+        return string.IsNullOrWhiteSpace(detail)
+            ? $"exit code {result.ExitCode}"
+            : detail;
+    }
+
+    private static IReadOnlyList<GpuInfo> ParseGpuInfos(string standardOutput)
+    {
+        var gpus = new List<GpuInfo>();
+        foreach (var line in standardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = line.Split(',', StringSplitOptions.TrimEntries);
+            if (parts.Length < 3 || !int.TryParse(parts[0], out var gpuId))
+            {
+                continue;
+            }
+
+            gpus.Add(
+                new GpuInfo
+                {
+                    Id = gpuId,
+                    Name = parts[1],
+                    Memory = parts[2],
+                });
+        }
+
+        return gpus;
+    }
+
     private async Task FollowStartupLogsAsync(
         string sshCommand,
         string deploymentName,
@@ -629,21 +1045,9 @@ fi
             return gpus;
         }
 
-        foreach (var line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var gpu in ParseGpuInfos(result.StandardOutput))
         {
-            var parts = line.Split(',', StringSplitOptions.TrimEntries);
-            if (parts.Length < 3 || !int.TryParse(parts[0], out var gpuId))
-            {
-                continue;
-            }
-
-            gpus.Add(
-                new GpuInfo
-                {
-                    Id = gpuId,
-                    Name = parts[1],
-                    Memory = parts[2],
-                });
+            gpus.Add(gpu);
         }
 
         return gpus;

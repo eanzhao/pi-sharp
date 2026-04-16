@@ -18,6 +18,7 @@ public sealed class PodsApplicationTests : IDisposable
         Assert.Contains("--interactive", helpText, StringComparison.Ordinal);
         Assert.Contains("pisharp pods ssh", helpText, StringComparison.Ordinal);
         Assert.Contains("pisharp pods shell", helpText, StringComparison.Ordinal);
+        Assert.Contains("pisharp pods doctor", helpText, StringComparison.Ordinal);
         Assert.Contains("--detach", helpText, StringComparison.Ordinal);
         Assert.Contains("--no-verify", helpText, StringComparison.Ordinal);
         Assert.Contains("--tail <lines>", helpText, StringComparison.Ordinal);
@@ -65,6 +66,73 @@ public sealed class PodsApplicationTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Contains("Known models:", output.ToString(), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Qwen/Qwen2.5-Coder-32B-Instruct", output.ToString());
+    }
+
+    [Fact]
+    public async Task RunAsync_DoctorCommand_PrintsHealthyReport()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@pod.example.com",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal),
+                ModelsPath = "/workspace",
+                VllmVersion = PodsDefaults.VllmNightly,
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("SSH OK", string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("0, NVIDIA H100, 80 GB\n", string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("/dev/sda1  500G  100G  400G  20% /workspace\n", string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("Python 3.12.8\nvLLM 0.10.1\n", string.Empty, 0));
+        transport.ExecuteResponses.Enqueue(new SshCommandResult("3\n", string.Empty, 0));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var app = new PodsApplication(
+            new PodsConsoleEnvironment(new StringReader(string.Empty), output, error, _rootDirectory, false),
+            new PodService(store, transport));
+
+        var exitCode = await app.RunAsync(["doctor"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Doctor report for pod 'dc1' (pod.example.com)", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("[pass] ssh: SSH connectivity OK (pod.example.com)", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("[pass] runtime: Python 3.12.8, vLLM 0.10.1", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Overall: healthy", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsync_DoctorCommand_ReturnsFailureWhenSshCheckFails()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@pod.example.com",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal),
+                ModelsPath = "/workspace",
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.ExecuteResponses.Enqueue(new SshCommandResult(string.Empty, "Connection refused", 255));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var app = new PodsApplication(
+            new PodsConsoleEnvironment(new StringReader(string.Empty), output, error, _rootDirectory, false),
+            new PodService(store, transport));
+
+        var exitCode = await app.RunAsync(["doctor"]);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("[fail] ssh: SSH connectivity failed: Connection refused", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Overall: issues detected", output.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]

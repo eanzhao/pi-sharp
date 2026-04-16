@@ -141,6 +141,7 @@ public sealed class PodsApplication
                 "start" => await RunStartAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
                 "stop" => await RunStopAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
                 "list" => await RunListAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                "doctor" => await RunDoctorAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
                 "logs" => await RunLogsAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
                 "agent" => await RunAgentAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
                 "ssh" => await RunSshAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
@@ -172,6 +173,7 @@ Usage:
   {rootCommand} start <model> --name <name> [--memory <percent>] [--context <size>] [--gpus <count>] [--pod <name>] [--detach] [--vllm <args...>]
   {rootCommand} stop [<name>] [--pod <name>]
   {rootCommand} list [--pod <name>] [--no-verify]
+  {rootCommand} doctor [<name>] [--no-verify]
   {rootCommand} logs <name> [--pod <name>] [--tail <lines>] [--no-follow]
   {rootCommand} agent <name> [message...] [--pod <name>] [--api-key <key>] [--cwd <dir>] [--thinking <level>] [-i|--interactive]
   {rootCommand} ssh [<name>] "<command>" [-t|--tty]
@@ -181,6 +183,7 @@ Examples:
   {podCommandRoot} setup dc1 "ssh root@1.2.3.4" --models-path /workspace
   {rootCommand} start Qwen/Qwen2.5-Coder-32B-Instruct --name qwen --detach
   {rootCommand} list
+  {rootCommand} doctor
   {rootCommand} agent qwen "Summarize the repository"
   {rootCommand} logs qwen --tail 200 --no-follow
   {rootCommand} ssh "nvidia-smi" --tty
@@ -440,6 +443,46 @@ Examples:
         }
 
         return 0;
+    }
+
+    private async Task<int> RunDoctorAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        string? podName = null;
+        var verifyProcesses = true;
+
+        for (var index = 0; index < args.Count; index++)
+        {
+            switch (args[index])
+            {
+                case "--no-verify":
+                    verifyProcesses = false;
+                    break;
+                default:
+                    if (args[index].StartsWith("-", StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException($"Unknown option '{args[index]}'.");
+                    }
+
+                    if (podName is null)
+                    {
+                        podName = args[index];
+                        break;
+                    }
+
+                    throw new InvalidOperationException($"Unexpected argument '{args[index]}'.");
+            }
+        }
+
+        var report = await _podService.RunDoctorAsync(
+            new PodDoctorRequest
+            {
+                PodName = podName,
+                VerifyProcesses = verifyProcesses,
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        await _environment.Output.WriteLineAsync(FormatDoctorReport(report)).ConfigureAwait(false);
+        return report.HasFailures ? 1 : 0;
     }
 
     private async Task<int> RunLogsAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
@@ -748,6 +791,54 @@ Examples:
         ?? "0.0.0";
 
     private string GetRootCommand() => _namespaced ? $"{_appName} pods" : _appName;
+
+    private static string FormatDoctorReport(PodDoctorReport report)
+    {
+        var lines = new List<string>
+        {
+            $"Doctor report for pod '{report.PodName}' ({report.Host})",
+            $"SSH: {report.SshCommand}",
+            $"Models path: {report.ModelsPath ?? "(not configured)"}",
+            $"vLLM channel: {report.VllmVersion}",
+            string.Empty,
+        };
+
+        foreach (var check in report.Checks)
+        {
+            lines.Add($"[{FormatDoctorStatus(check.Status)}] {check.Name}: {check.Summary}");
+            if (!string.IsNullOrWhiteSpace(check.Details))
+            {
+                foreach (var detailLine in check.Details.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    lines.Add($"  {detailLine}");
+                }
+            }
+        }
+
+        if (report.Deployments.Count > 0)
+        {
+            lines.Add(string.Empty);
+            lines.Add("Deployments:");
+            foreach (var deployment in report.Deployments)
+            {
+                lines.Add(
+                    $"  {deployment.Name} - {deployment.Status} - {deployment.Deployment.ModelId} - http://{deployment.Host}:{deployment.Deployment.Port}/v1");
+            }
+        }
+
+        lines.Add(string.Empty);
+        lines.Add(report.HasFailures ? "Overall: issues detected" : report.HasWarnings ? "Overall: healthy with warnings" : "Overall: healthy");
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string FormatDoctorStatus(PodDoctorCheckStatus status) =>
+        status switch
+        {
+            PodDoctorCheckStatus.Pass => "pass",
+            PodDoctorCheckStatus.Warning => "warn",
+            PodDoctorCheckStatus.Fail => "fail",
+            _ => "unknown",
+        };
 
     private async ValueTask WritePodOutputAsync(string text, bool isError, CancellationToken cancellationToken)
     {
