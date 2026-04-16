@@ -4,6 +4,7 @@
     <Project Path="src/PiSharp.Agent/PiSharp.Agent.csproj" />
     <Project Path="src/PiSharp.Cli/PiSharp.Cli.csproj" />
     <Project Path="src/PiSharp.CodingAgent/PiSharp.CodingAgent.csproj" />
+    <Project Path="src/PiSharp.Mom/PiSharp.Mom.csproj" />
     <Project Path="src/PiSharp.Pods/PiSharp.Pods.csproj" />
     <Project Path="src/PiSharp.Pods.Cli/PiSharp.Pods.Cli.csproj" />
     <Project Path="src/PiSharp.Tui/PiSharp.Tui.csproj" />
@@ -14,6 +15,7 @@
     <Project Path="tests/PiSharp.Agent.Tests/PiSharp.Agent.Tests.csproj" />
     <Project Path="tests/PiSharp.Cli.Tests/PiSharp.Cli.Tests.csproj" />
     <Project Path="tests/PiSharp.CodingAgent.Tests/PiSharp.CodingAgent.Tests.csproj" />
+    <Project Path="tests/PiSharp.Mom.Tests/PiSharp.Mom.Tests.csproj" />
     <Project Path="tests/PiSharp.Pods.Tests/PiSharp.Pods.Tests.csproj" />
     <Project Path="tests/PiSharp.Tui.Tests/PiSharp.Tui.Tests.csproj" />
     <Project Path="tests/PiSharp.WebUi.Tests/PiSharp.WebUi.Tests.csproj" />

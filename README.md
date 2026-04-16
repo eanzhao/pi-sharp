@@ -15,7 +15,7 @@ A learning project that rebuilds pi-mono's architecture in C#, project by projec
 | `PiSharp.Cli` | coding-agent CLI | Implemented | Interactive TUI + print + JSON modes, session resume/fork, multi-provider, MEAI middleware |
 | `PiSharp.WebUi` | `@mariozechner/pi-web-ui` | Implemented | Blazor chat components, markdown rendering, syntax highlighting, SSR-friendly |
 | `PiSharp.Pods` | `@mariozechner/pi` | Implemented | GPU pod management, SSH orchestration, vLLM deployment, interactive agent |
-| `PiSharp.Mom` | `@mariozechner/pi-mom` | Planned | Slack bot integration |
+| `PiSharp.Mom` | `@mariozechner/pi-mom` | Implemented | Slack Socket Mode bot runtime backed by `CodingAgentSession` |
 
 ## Why?
 
@@ -66,7 +66,8 @@ pi-sharp/
 │   ├── PiSharp.Cli/          # CLI entry point (interactive / print / JSON)
 │   ├── PiSharp.WebUi/        # Blazor chat component library
 │   ├── PiSharp.Pods/         # GPU pod management library
-│   └── PiSharp.Pods.Cli/     # Pod management executable
+│   ├── PiSharp.Pods.Cli/     # Pod management executable
+│   └── PiSharp.Mom/          # Slack bot runtime
 ├── tests/
 │   ├── PiSharp.Ai.Tests/
 │   ├── PiSharp.Tui.Tests/
@@ -74,7 +75,8 @@ pi-sharp/
 │   ├── PiSharp.CodingAgent.Tests/
 │   ├── PiSharp.Cli.Tests/
 │   ├── PiSharp.WebUi.Tests/
-│   └── PiSharp.Pods.Tests/
+│   ├── PiSharp.Pods.Tests/
+│   └── PiSharp.Mom.Tests/
 └── docs/                      # Architecture docs (one per phase)
 ```
 
@@ -90,6 +92,7 @@ Each implementation phase has a corresponding document in `docs/`:
 - [05 - PiSharp.Cli](docs/05-cli.md) — CLI modes, provider bootstrapping, session lifecycle
 - [06 - PiSharp.WebUi](docs/06-web-ui.md) — Blazor chat components, markdown/code rendering
 - [07 - PiSharp.Pods](docs/07-pods.md) — Pod config, SSH orchestration, vLLM deployment
+- [08 - PiSharp.Mom](docs/08-mom.md) — Slack Socket Mode runtime, per-channel sessions, workspace persistence
 
 ## Reference
 

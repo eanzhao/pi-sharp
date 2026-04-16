@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using PiSharp.Agent;
 using PiSharp.Ai;
 using PiSharp.CodingAgent;
+using PiSharp.Mom;
 using PiSharp.Pods;
 using PiSharp.Tui;
 
@@ -106,21 +107,35 @@ public sealed class CliApplication
         "USERPROFILE",
     ];
 
+    private static readonly string[] MomEnvironmentVariables =
+    [
+        MomDefaults.SlackAppTokenEnvironmentVariable,
+        MomDefaults.SlackBotTokenEnvironmentVariable,
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "HOME",
+        "USERPROFILE",
+    ];
+
     private readonly CliEnvironment _environment;
     private readonly CodingAgentProviderCatalog _providerCatalog;
     private readonly Func<string, string, SettingsManager> _createSettingsManager;
     private readonly Func<IReadOnlyList<string>, CancellationToken, Task<int>> _runPodsCommand;
+    private readonly Func<IReadOnlyList<string>, CancellationToken, Task<int>> _runMomCommand;
 
     public CliApplication(
         CliEnvironment? environment = null,
         CodingAgentProviderCatalog? providerCatalog = null,
         Func<string, string, SettingsManager>? createSettingsManager = null,
-        Func<IReadOnlyList<string>, CancellationToken, Task<int>>? runPodsCommand = null)
+        Func<IReadOnlyList<string>, CancellationToken, Task<int>>? runPodsCommand = null,
+        Func<IReadOnlyList<string>, CancellationToken, Task<int>>? runMomCommand = null)
     {
         _environment = environment ?? CliEnvironment.CreateProcessEnvironment();
         _providerCatalog = providerCatalog ?? CodingAgentProviderCatalog.CreateDefault();
         _createSettingsManager = createSettingsManager ?? SettingsManager.Create;
         _runPodsCommand = runPodsCommand ?? RunPodsCommandAsync;
+        _runMomCommand = runMomCommand ?? RunMomCommandAsync;
     }
 
     public async Task<int> RunAsync(IReadOnlyList<string> args, CancellationToken cancellationToken = default)
@@ -130,6 +145,11 @@ public sealed class CliApplication
         if (IsPodsCommand(args))
         {
             return await _runPodsCommand(NormalizePodsArgs(args), cancellationToken).ConfigureAwait(false);
+        }
+
+        if (IsMomCommand(args))
+        {
+            return await _runMomCommand(NormalizeMomArgs(args), cancellationToken).ConfigureAwait(false);
         }
 
         var parsed = CliArgumentsParser.Parse(args);
@@ -338,12 +358,47 @@ public sealed class CliApplication
         return podsApplication.RunAsync(args, cancellationToken);
     }
 
+    private Task<int> RunMomCommandAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        var momEnvironmentVariables = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var variableName in MomEnvironmentVariables)
+        {
+            var value = _environment.GetEnvironmentVariable(variableName);
+            if (value is not null)
+            {
+                momEnvironmentVariables[variableName] = value;
+            }
+        }
+
+        var momApplication = new MomApplication(
+            new MomConsoleEnvironment(
+                _environment.Input,
+                _environment.Output,
+                _environment.Error,
+                _environment.CurrentDirectory,
+                momEnvironmentVariables),
+            appName: "pisharp",
+            namespaced: true,
+            providerCatalog: _providerCatalog,
+            createSettingsManager: _createSettingsManager);
+
+        return momApplication.RunAsync(args, cancellationToken);
+    }
+
     private static bool IsPodsCommand(IReadOnlyList<string> args) =>
         args.Count > 0 && string.Equals(args[0], "pods", StringComparison.Ordinal);
+
+    private static bool IsMomCommand(IReadOnlyList<string> args) =>
+        args.Count > 0 && string.Equals(args[0], "mom", StringComparison.Ordinal);
 
     private static IReadOnlyList<string> NormalizePodsArgs(IReadOnlyList<string> args) =>
         args.Count == 1
             ? ["pods"]
+            : args.Skip(1).ToArray();
+
+    private static IReadOnlyList<string> NormalizeMomArgs(IReadOnlyList<string> args) =>
+        args.Count == 1
+            ? ["mom"]
             : args.Skip(1).ToArray();
 
     private async Task<int> RunInteractiveAsync(
