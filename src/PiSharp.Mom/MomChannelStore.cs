@@ -38,17 +38,25 @@ public sealed class MomChannelStore : IDisposable
     private readonly HttpClient? _httpClient;
     private readonly bool _ownsHttpClient;
     private readonly string? _slackBotToken;
+    private readonly MomSlackWorkspaceIndex? _workspaceIndex;
 
-    public MomChannelStore(string workspaceDirectory, string? slackBotToken = null, HttpClient? httpClient = null)
+    public MomChannelStore(
+        string workspaceDirectory,
+        string? slackBotToken = null,
+        HttpClient? httpClient = null,
+        MomSlackWorkspaceIndex? workspaceIndex = null)
     {
         WorkspaceDirectory = Path.GetFullPath(workspaceDirectory ?? throw new ArgumentNullException(nameof(workspaceDirectory)));
         _slackBotToken = string.IsNullOrWhiteSpace(slackBotToken) ? null : slackBotToken.Trim();
         _httpClient = httpClient ?? (_slackBotToken is null ? null : new HttpClient());
         _ownsHttpClient = httpClient is null && _httpClient is not null;
+        _workspaceIndex = workspaceIndex;
         Directory.CreateDirectory(WorkspaceDirectory);
     }
 
     public string WorkspaceDirectory { get; }
+
+    public MomSlackWorkspaceIndex? WorkspaceIndex => _workspaceIndex;
 
     public string NormalizeMessageText(SlackIncomingEvent incomingEvent) =>
         MomTurnProcessor.NormalizePrompt(incomingEvent);
@@ -133,6 +141,8 @@ public sealed class MomChannelStore : IDisposable
         {
             Ts = incomingEvent.Timestamp,
             User = incomingEvent.UserId,
+            UserName = ResolveUserName(incomingEvent.UserId),
+            DisplayName = ResolveDisplayName(incomingEvent.UserId),
             Text = NormalizeMessageText(incomingEvent),
             Attachments = await DownloadAttachmentsAsync(
                     incomingEvent.ChannelId,
@@ -175,6 +185,8 @@ public sealed class MomChannelStore : IDisposable
         {
             Ts = timestamp,
             User = userId,
+            UserName = isBot ? null : ResolveUserName(userId),
+            DisplayName = isBot ? null : ResolveDisplayName(userId),
             Text = text,
             Attachments = await DownloadAttachmentsAsync(channelId, files, timestamp, cancellationToken).ConfigureAwait(false),
             IsBot = isBot,
@@ -329,6 +341,12 @@ public sealed class MomChannelStore : IDisposable
         return null;
     }
 
+    public string GetChannelLabel(string channelId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+        return _workspaceIndex?.FindChannel(channelId)?.Name ?? channelId;
+    }
+
     public void Dispose()
     {
         if (_ownsHttpClient)
@@ -468,4 +486,10 @@ public sealed class MomChannelStore : IDisposable
         var lastByte = stream.ReadByte();
         return lastByte != '\n';
     }
+
+    private string? ResolveUserName(string userId) =>
+        _workspaceIndex?.FindUser(userId)?.UserName;
+
+    private string? ResolveDisplayName(string userId) =>
+        _workspaceIndex?.FindUser(userId)?.DisplayName;
 }

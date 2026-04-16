@@ -150,7 +150,10 @@ Examples:
             Model = options.Model,
             ApiKey = options.ApiKey,
         };
-        using var store = new MomChannelStore(workspaceDirectory, slackBotToken);
+        var users = await slackClient.GetUsersAsync(cancellationToken).ConfigureAwait(false);
+        var channels = await slackClient.GetChannelsAsync(users, cancellationToken).ConfigureAwait(false);
+        var workspaceIndex = new MomSlackWorkspaceIndex(users, channels);
+        using var store = new MomChannelStore(workspaceDirectory, slackBotToken, workspaceIndex: workspaceIndex);
 
         var turnProcessor = new MomTurnProcessor(
             _environment,
@@ -173,6 +176,10 @@ Examples:
                     $"Backfilled {backfillResult.MessagesLogged} messages across {backfillResult.ChannelsScanned} channels")
                 .ConfigureAwait(false);
         }
+
+        await _environment.Output.WriteLineAsync(
+                $"Loaded {workspaceIndex.Users.Count} users and {workspaceIndex.Channels.Count} channels")
+            .ConfigureAwait(false);
 
         var responseCutoffTimestamp = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000d)
             .ToString("F6", CultureInfo.InvariantCulture);

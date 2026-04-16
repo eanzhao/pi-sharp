@@ -5,6 +5,15 @@ public sealed record SlackFileReference(
     string? PrivateDownloadUrl = null,
     string? PrivateUrl = null);
 
+public sealed record SlackUserInfo(
+    string Id,
+    string UserName,
+    string DisplayName);
+
+public sealed record SlackChannelInfo(
+    string Id,
+    string Name);
+
 public sealed record SlackIncomingEvent(
     string ChannelId,
     string UserId,

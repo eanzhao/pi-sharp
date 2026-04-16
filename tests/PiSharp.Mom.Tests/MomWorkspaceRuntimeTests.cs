@@ -78,6 +78,76 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
     }
 
     [Fact]
+    public async Task DispatchAsync_UsesResolvedUserNamesInSyncedContext()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("ack"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        var workspaceIndex = new MomSlackWorkspaceIndex(
+            users:
+            [
+                new SlackUserInfo("U234", "alice", "Alice Example"),
+                new SlackUserInfo("U123", "bob", "Bob Example"),
+            ],
+            channels:
+            [
+                new SlackChannelInfo("C123", "general"),
+            ]);
+
+        using var store = new MomChannelStore(_workspaceDirectory, workspaceIndex: workspaceIndex);
+        var turnProcessor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+        var runtime = new MomWorkspaceRuntime(turnProcessor, slackClient, store);
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U234",
+            "Earlier channel message",
+            "12345.1000",
+            "message",
+            IsDirectMessage: false,
+            RequiresResponse: false));
+
+        await runtime.DispatchAsync(new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> summarize the channel",
+            "12345.2000",
+            "app_mention",
+            IsDirectMessage: false));
+
+        await runtime.WaitForIdleAsync("C123");
+
+        var request = Assert.Single(chatClient.Requests);
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[alice]: Earlier channel message");
+        Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[bob]: summarize the channel");
+    }
+
+    [Fact]
     public async Task DispatchAsync_SyncsLoggedAttachmentsIntoNextTurn()
     {
         var chatClient = new FakeChatClient(

@@ -92,8 +92,11 @@ public sealed class MomTurnProcessor
                 {
                     WorkspaceDirectory = _options.WorkspaceDirectory,
                     ChannelId = incomingEvent.ChannelId,
+                    ChannelName = _store.GetChannelLabel(incomingEvent.ChannelId),
                     ChannelDirectory = channelDirectory,
                     Memory = _store.ReadMemory(incomingEvent.ChannelId),
+                    Users = _store.WorkspaceIndex?.Users ?? Array.Empty<SlackUserInfo>(),
+                    Channels = _store.WorkspaceIndex?.Channels ?? Array.Empty<SlackChannelInfo>(),
                     CurrentTime = DateTimeOffset.UtcNow,
                 });
 

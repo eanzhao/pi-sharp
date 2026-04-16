@@ -172,6 +172,105 @@ public sealed class SlackWebApiClient : ISlackMessagingClient, IDisposable
         return new SlackConversationHistoryPage(messages, nextCursor);
     }
 
+    internal async Task<IReadOnlyList<SlackUserInfo>> GetUsersAsync(CancellationToken cancellationToken = default)
+    {
+        var users = new List<SlackUserInfo>();
+        string? cursor = null;
+
+        do
+        {
+            var root = await PostApiAsync(
+                    "users.list",
+                    new
+                    {
+                        limit = 200,
+                        cursor,
+                    },
+                    _botToken,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (root.TryGetProperty("members", out var membersElement) && membersElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var memberElement in membersElement.EnumerateArray())
+                {
+                    if (!TryGetString(memberElement, "id", out var id) ||
+                        !TryGetString(memberElement, "name", out var userName))
+                    {
+                        continue;
+                    }
+
+                    var deleted = memberElement.TryGetProperty("deleted", out var deletedElement) &&
+                        deletedElement.ValueKind == JsonValueKind.True;
+                    if (deleted)
+                    {
+                        continue;
+                    }
+
+                    TryGetString(memberElement, "real_name", out var displayName);
+                    users.Add(new SlackUserInfo(id, userName, string.IsNullOrWhiteSpace(displayName) ? userName : displayName));
+                }
+            }
+
+            cursor = TryGetNextCursor(root);
+        }
+        while (!string.IsNullOrWhiteSpace(cursor));
+
+        return users;
+    }
+
+    internal async Task<IReadOnlyList<SlackChannelInfo>> GetChannelsAsync(
+        IReadOnlyList<SlackUserInfo> users,
+        CancellationToken cancellationToken = default)
+    {
+        var channels = new Dictionary<string, SlackChannelInfo>(StringComparer.Ordinal);
+        var usersById = users.ToDictionary(static user => user.Id, StringComparer.Ordinal);
+
+        await LoadChannelListAsync(
+                "public_channel,private_channel",
+                (channelElement) =>
+                {
+                    if (!TryGetString(channelElement, "id", out var id) ||
+                        !TryGetString(channelElement, "name", out var name))
+                    {
+                        return;
+                    }
+
+                    var isMember = !channelElement.TryGetProperty("is_member", out var isMemberElement) ||
+                        isMemberElement.ValueKind != JsonValueKind.False;
+                    if (!isMember)
+                    {
+                        return;
+                    }
+
+                    channels[id] = new SlackChannelInfo(id, name);
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await LoadChannelListAsync(
+                "im",
+                (channelElement) =>
+                {
+                    if (!TryGetString(channelElement, "id", out var id))
+                    {
+                        return;
+                    }
+
+                    TryGetString(channelElement, "user", out var userId);
+                    var name = !string.IsNullOrWhiteSpace(userId) && usersById.TryGetValue(userId, out var user)
+                        ? $"DM:{user.UserName}"
+                        : $"DM:{id}";
+                    channels[id] = new SlackChannelInfo(id, name);
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return channels.Values
+            .OrderBy(static channel => channel.Name, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -287,5 +386,55 @@ public sealed class SlackWebApiClient : ISlackMessagingClient, IDisposable
         }
 
         return files;
+    }
+
+    private async Task LoadChannelListAsync(
+        string types,
+        Action<JsonElement> handleChannel,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(types);
+        ArgumentNullException.ThrowIfNull(handleChannel);
+
+        string? cursor = null;
+        do
+        {
+            var root = await PostApiAsync(
+                    "conversations.list",
+                    new
+                    {
+                        types,
+                        exclude_archived = true,
+                        limit = 200,
+                        cursor,
+                    },
+                    _botToken,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (root.TryGetProperty("channels", out var channelsElement) && channelsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var channelElement in channelsElement.EnumerateArray())
+                {
+                    handleChannel(channelElement);
+                }
+            }
+
+            cursor = TryGetNextCursor(root);
+        }
+        while (!string.IsNullOrWhiteSpace(cursor));
+    }
+
+    private static string? TryGetNextCursor(JsonElement root)
+    {
+        if (root.TryGetProperty("response_metadata", out var metadataElement) &&
+            metadataElement.ValueKind == JsonValueKind.Object &&
+            TryGetString(metadataElement, "next_cursor", out var parsedCursor) &&
+            !string.IsNullOrWhiteSpace(parsedCursor))
+        {
+            return parsedCursor;
+        }
+
+        return null;
     }
 }

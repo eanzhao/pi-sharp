@@ -6,9 +6,15 @@ public sealed record MomSystemPromptOptions
 
     public required string ChannelId { get; init; }
 
+    public string? ChannelName { get; init; }
+
     public required string ChannelDirectory { get; init; }
 
     public required string Memory { get; init; }
+
+    public IReadOnlyList<SlackUserInfo> Users { get; init; } = Array.Empty<SlackUserInfo>();
+
+    public IReadOnlyList<SlackChannelInfo> Channels { get; init; } = Array.Empty<SlackChannelInfo>();
 
     public DateTimeOffset? CurrentTime { get; init; }
 }
@@ -28,6 +34,20 @@ public static class MomSystemPrompt
         var immediateExample = $"{{\"type\":\"immediate\",\"channelId\":\"{options.ChannelId}\",\"text\":\"New activity detected\"}}";
         var oneShotExample = $"{{\"type\":\"one-shot\",\"channelId\":\"{options.ChannelId}\",\"text\":\"Remind me later\",\"at\":\"2026-04-16T18:00:00+08:00\"}}";
         var periodicExample = $"{{\"type\":\"periodic\",\"channelId\":\"{options.ChannelId}\",\"text\":\"Check inbox\",\"schedule\":\"0 9 * * 1-5\",\"timezone\":\"Asia/Singapore\"}}";
+        var currentChannelLabel = string.IsNullOrWhiteSpace(options.ChannelName)
+            ? options.ChannelId
+            : $"{options.ChannelId} ({options.ChannelName})";
+        var channelMappings = options.Channels.Count == 0
+            ? "(no channel metadata loaded)"
+            : string.Join(
+                Environment.NewLine,
+                options.Channels.Select(static channel =>
+                    $"{channel.Id}\t{(channel.Name.StartsWith("DM:", StringComparison.Ordinal) ? channel.Name : $"#{channel.Name}")}"));
+        var userMappings = options.Users.Count == 0
+            ? "(no user metadata loaded)"
+            : string.Join(
+                Environment.NewLine,
+                options.Users.Select(static user => $"{user.Id}\t@{user.UserName}\t{user.DisplayName}"));
 
         return
         $"""
@@ -42,13 +62,20 @@ Use Slack mrkdwn instead of Markdown:
 
 Workspace layout:
 - Workspace root: {workspaceDirectory}
-- Current channel: {options.ChannelId}
+- Current channel: {currentChannelLabel}
 - Channel directory: {channelDirectory}
 - Attachments directory for user-shared files: {attachmentsDirectory}
 - Scratch directory for temporary work: {scratchDirectory}
 - Full conversation log: {Normalize(Path.Combine(options.ChannelDirectory, MomDefaults.LogFileName))}
 - Shared memory: {Normalize(Path.Combine(options.WorkspaceDirectory, MomDefaults.MemoryFileName))}
 - Channel memory: {Normalize(Path.Combine(options.ChannelDirectory, MomDefaults.MemoryFileName))}
+
+Slack IDs:
+Channels:
+{channelMappings}
+
+Users:
+{userMappings}
 
 Operational rules:
 - Store durable files inside the channel directory.
