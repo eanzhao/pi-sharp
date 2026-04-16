@@ -95,9 +95,29 @@ public sealed class PodService
 
     public PodReference? GetActivePod() => _store.GetActivePod();
 
+    public PodReference ResolvePodReference(string? podName = null) => ResolvePod(podName);
+
     public PodsConfiguration SetActivePod(string name) => _store.SetActivePod(name);
 
     public PodsConfiguration RemovePod(string name) => _store.RemovePod(name);
+
+    public async Task<int> ExecuteSshCommandAsync(
+        string command,
+        string? podName = null,
+        PodOutputHandler? outputHandler = null,
+        bool forceTty = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(command);
+
+        var podReference = ResolvePod(podName);
+        return await _sshTransport.ExecuteStreamingAsync(
+            podReference.Pod.SshCommand,
+            command,
+            (chunk, ct) => ForwardChunkAsync(chunk, outputHandler, ct),
+            new SshStreamingOptions { ForceTty = forceTty },
+            cancellationToken).ConfigureAwait(false);
+    }
 
     public async Task<PodSetupResult> SetupPodAsync(
         string name,

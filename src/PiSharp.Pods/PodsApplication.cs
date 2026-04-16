@@ -94,6 +94,7 @@ public sealed class PodsApplication
     private readonly PodsConsoleEnvironment _environment;
     private readonly PodService _podService;
     private readonly IPodAgentFactory _podAgentFactory;
+    private readonly IPodShellLauncher _podShellLauncher;
     private readonly string _appName;
     private readonly bool _namespaced;
 
@@ -101,12 +102,14 @@ public sealed class PodsApplication
         PodsConsoleEnvironment? environment = null,
         PodService? podService = null,
         IPodAgentFactory? podAgentFactory = null,
+        IPodShellLauncher? podShellLauncher = null,
         string appName = "pisharp-pods",
         bool namespaced = false)
     {
         _environment = environment ?? PodsConsoleEnvironment.CreateProcessEnvironment();
         _podService = podService ?? new PodService(getEnvironmentVariable: _environment.GetEnvironmentVariable);
         _podAgentFactory = podAgentFactory ?? new PodAgentFactory();
+        _podShellLauncher = podShellLauncher ?? new ProcessPodShellLauncher();
         _appName = string.IsNullOrWhiteSpace(appName) ? "pisharp-pods" : appName.Trim();
         _namespaced = namespaced;
     }
@@ -140,6 +143,8 @@ public sealed class PodsApplication
                 "list" => await RunListAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
                 "logs" => await RunLogsAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
                 "agent" => await RunAgentAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                "ssh" => await RunSshAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
+                "shell" => await RunShellAsync(args.Skip(1).ToArray(), cancellationToken).ConfigureAwait(false),
                 _ => await UnknownCommandAsync(args[0]).ConfigureAwait(false),
             };
         }
@@ -169,12 +174,16 @@ Usage:
   {rootCommand} list [--pod <name>]
   {rootCommand} logs <name> [--pod <name>]
   {rootCommand} agent <name> [message...] [--pod <name>] [--api-key <key>] [--cwd <dir>] [--thinking <level>] [-i|--interactive]
+  {rootCommand} ssh [<name>] "<command>"
+  {rootCommand} shell [<name>]
 
 Examples:
   {podCommandRoot} setup dc1 "ssh root@1.2.3.4" --models-path /workspace
   {rootCommand} start Qwen/Qwen2.5-Coder-32B-Instruct --name qwen
   {rootCommand} list
   {rootCommand} agent qwen "Summarize the repository"
+  {rootCommand} ssh "nvidia-smi"
+  {rootCommand} shell dc1
 """;
     }
 
@@ -519,6 +528,34 @@ Examples:
         return interactive
             ? await RunInteractiveAgentAsync(agent, endpoint, prompt, cancellationToken).ConfigureAwait(false)
             : await RunPrintModeAgentAsync(agent, prompt!, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> RunSshAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        if (args.Count == 0 || args.Count > 2)
+        {
+            throw new InvalidOperationException("Usage: ssh [<name>] \"<command>\"");
+        }
+
+        var podName = args.Count == 2 ? args[0] : null;
+        var command = args.Count == 2 ? args[1] : args[0];
+
+        return await _podService.ExecuteSshCommandAsync(
+            command,
+            podName,
+            WritePodOutputAsync,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<int> RunShellAsync(IReadOnlyList<string> args, CancellationToken cancellationToken)
+    {
+        if (args.Count > 1)
+        {
+            throw new InvalidOperationException("Usage: shell [<name>]");
+        }
+
+        var podReference = _podService.ResolvePodReference(args.Count == 1 ? args[0] : null);
+        return await _podShellLauncher.LaunchAsync(podReference.Pod.SshCommand, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<string> BuildPromptAsync(IReadOnlyList<string> messages)

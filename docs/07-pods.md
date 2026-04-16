@@ -195,7 +195,7 @@ TS 版 `prompt.ts` 明确区分了 gpt-oss 模型要走 `/v1/responses`。C# 版
 
 ## 当前取舍
 
-- 不做 `ssh` / `shell` 这些更偏交互式的远端命令
+- `ssh` / `shell` 提供最小可用远端访问，但还没有更高阶的会话管理或本地增强体验
 - `agent` 目前支持 print-mode prompt，也支持 `-i` / 无 prompt 进入交互模式
 - `rg` 先实现为内置 regex 搜索，而不是直接包装系统 `rg`
 - `glob` 先支持常见 `*` / `**` / `?` 语义，不追求完整 shell glob 行为
@@ -214,6 +214,7 @@ TS 版 `prompt.ts` 明确区分了 gpt-oss 模型要走 `/v1/responses`。C# 版
 - `PodService` 的 setup / start / failed-start rollback 行为
 - `PodsApplication` 的 standalone / namespaced 路由
 - `PiSharp.Cli` 到 `PiSharp.Pods` 的 `pods` 命名空间转发
+- `pods ssh` / `pods shell` 的远端命令与 shell 启动
 - `pods agent` 的 print / interactive 双路径
 - endpoint 解析和 gpt-oss 的 API 类型选择
 - `ls` / `read` / `glob` / `rg` 工具的基础行为与路径逃逸拦截

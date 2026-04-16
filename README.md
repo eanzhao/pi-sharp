@@ -34,6 +34,7 @@ dotnet test     # Run all tests
 dotnet run --project src/PiSharp.Cli  # Run the CLI
 dotnet run --project src/PiSharp.Cli -- pods  # Run pods commands through the main CLI
 dotnet run --project src/PiSharp.Cli -- pods agent qwen -i  # Interactive chat with a pod deployment
+dotnet run --project src/PiSharp.Cli -- pods ssh "nvidia-smi"  # Run a remote command on the active pod
 ```
 
 ## Project Structure

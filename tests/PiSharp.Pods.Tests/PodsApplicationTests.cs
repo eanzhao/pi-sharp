@@ -16,6 +16,8 @@ public sealed class PodsApplicationTests : IDisposable
         Assert.Contains("pisharp pods start", helpText, StringComparison.Ordinal);
         Assert.Contains("pisharp pods setup", helpText, StringComparison.Ordinal);
         Assert.Contains("--interactive", helpText, StringComparison.Ordinal);
+        Assert.Contains("pisharp pods ssh", helpText, StringComparison.Ordinal);
+        Assert.Contains("pisharp pods shell", helpText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -59,6 +61,67 @@ public sealed class PodsApplicationTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Contains("Known models:", output.ToString(), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Qwen/Qwen2.5-Coder-32B-Instruct", output.ToString());
+    }
+
+    [Fact]
+    public async Task RunAsync_SshCommand_StreamsRemoteOutput()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@1.2.3.4",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal),
+                ModelsPath = "/workspace",
+            });
+
+        var transport = new FakePodSshTransport();
+        transport.StreamingResponses.Enqueue(
+            new FakeStreamingResponse(
+                0,
+                [new SshOutputChunk(SshOutputStream.StandardOutput, "gpu-ok\n")]));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var app = new PodsApplication(
+            new PodsConsoleEnvironment(new StringReader(string.Empty), output, error, _rootDirectory, false),
+            new PodService(store, transport));
+
+        var exitCode = await app.RunAsync(["ssh", "nvidia-smi"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("gpu-ok\n", output.ToString());
+        Assert.Contains(transport.StreamingInvocations, invocation => invocation.Command == "nvidia-smi");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShellCommand_LaunchesPodShell()
+    {
+        var store = new PodsConfigurationStore(_rootDirectory);
+        store.AddOrUpdatePod(
+            "dc1",
+            new PodDefinition
+            {
+                SshCommand = "ssh root@1.2.3.4",
+                Gpus = [new GpuInfo { Id = 0, Name = "NVIDIA H100", Memory = "80 GB" }],
+                Models = new Dictionary<string, ModelDeployment>(StringComparer.Ordinal),
+                ModelsPath = "/workspace",
+            });
+
+        var launcher = new FakePodShellLauncher();
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var app = new PodsApplication(
+            new PodsConsoleEnvironment(new StringReader(string.Empty), output, error, _rootDirectory, false),
+            new PodService(store, new FakePodSshTransport()),
+            podShellLauncher: launcher);
+
+        var exitCode = await app.RunAsync(["shell"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["ssh root@1.2.3.4"], launcher.Launches);
     }
 
     [Fact]
