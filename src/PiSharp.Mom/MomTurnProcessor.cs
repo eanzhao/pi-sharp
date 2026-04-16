@@ -115,6 +115,10 @@ public sealed class MomTurnProcessor
                                 channelDirectory,
                                 incomingEvent.ChannelId,
                                 _slackClient),
+                            MomThreadReporter.CreateExtension(
+                                incomingEvent.ChannelId,
+                                placeholderTs,
+                                _slackClient),
                         ],
                     },
                     cancellationToken)

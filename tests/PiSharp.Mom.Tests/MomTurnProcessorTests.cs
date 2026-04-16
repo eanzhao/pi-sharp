@@ -62,8 +62,10 @@ public sealed class MomTurnProcessorTests : IDisposable
 
         Assert.Single(slackClient.Posts);
         Assert.Equal("_Thinking..._", slackClient.Posts[0].Text);
-        Assert.Single(slackClient.Updates);
-        Assert.Equal("*done* <https://example.com|docs>", slackClient.Updates[0].Text);
+        var finalUpdate = slackClient.Updates
+            .Where(update => update.Timestamp == slackClient.Posts[0].Timestamp)
+            .Last();
+        Assert.Equal("*done* <https://example.com|docs>", finalUpdate.Text);
 
         var request = Assert.Single(chatClient.Requests);
         Assert.Contains(request, message => message.Role == ChatRole.User && message.Text == "[U123]: summarize this repo");
@@ -231,6 +233,135 @@ public sealed class MomTurnProcessorTests : IDisposable
         Assert.Equal("_Starting event: daily.json_", slackClient.Posts[0].Text);
         Assert.Empty(slackClient.Updates);
         Assert.Single(slackClient.Deletes);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_PostsToolProgressInThread()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(
+                    new FunctionCallContent(
+                        "call-1",
+                        BuiltInToolNames.Write,
+                        new Dictionary<string, object?>
+                        {
+                            ["path"] = "artifact.txt",
+                            ["content"] = "hello",
+                        }),
+                    ChatFinishReason.ToolCalls),
+            ],
+            [
+                CreateUpdate(new TextContent("done"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        var store = new MomChannelStore(_workspaceDirectory);
+        var processor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+
+        var incomingEvent = new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> create an artifact",
+            "12345.6789",
+            "app_mention",
+            IsDirectMessage: false);
+
+        await store.LogIncomingEventAsync(incomingEvent);
+        await processor.ProcessAsync(incomingEvent);
+
+        Assert.Equal(2, slackClient.Posts.Count);
+        Assert.Equal("_Thinking..._", slackClient.Posts[0].Text);
+        Assert.Equal(slackClient.Posts[0].Timestamp, slackClient.Posts[1].ThreadTimestamp);
+        Assert.Contains("*Tool:* `write` _running_", slackClient.Posts[1].Text, StringComparison.Ordinal);
+
+        Assert.True(slackClient.Updates.Count >= 2);
+        Assert.Contains(slackClient.Updates, update =>
+            update.Timestamp == slackClient.Posts[1].Timestamp &&
+            update.Text.Contains("*Tool:* `write` _done_", StringComparison.Ordinal) &&
+            update.Text.Contains("artifact.txt", StringComparison.Ordinal));
+        Assert.Contains(slackClient.Updates, update =>
+            update.Timestamp == slackClient.Posts[0].Timestamp &&
+            update.Text == "done");
+
+        Assert.True(File.Exists(Path.Combine(_workspaceDirectory, "C123", "artifact.txt")));
+    }
+
+    [Fact]
+    public async Task ProcessAsync_StreamsAssistantTextIntoMainMessage()
+    {
+        var chatClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("hello ")),
+                CreateUpdate(new TextContent("world"), ChatFinishReason.Stop),
+            ]);
+
+        var slackClient = new FakeSlackMessagingClient();
+        var environment = new MomConsoleEnvironment(
+            new StringReader(string.Empty),
+            new StringWriter(),
+            new StringWriter(),
+            _workspaceDirectory,
+            new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "env-key",
+            });
+
+        var store = new MomChannelStore(_workspaceDirectory);
+        var processor = new MomTurnProcessor(
+            environment,
+            new MomRuntimeOptions
+            {
+                WorkspaceDirectory = _workspaceDirectory,
+                Provider = "openai",
+                Model = "gpt-4.1-mini",
+                ApiKey = "test-key",
+            },
+            CreateProviderCatalog(chatClient),
+            static (_, _) => SettingsManager.InMemory(),
+            slackClient,
+            store);
+
+        var incomingEvent = new SlackIncomingEvent(
+            "C123",
+            "U123",
+            "<@B123> say hello",
+            "12345.6789",
+            "app_mention",
+            IsDirectMessage: false);
+
+        await store.LogIncomingEventAsync(incomingEvent);
+        await processor.ProcessAsync(incomingEvent);
+
+        Assert.Single(slackClient.Posts);
+        var mainUpdates = slackClient.Updates
+            .Where(update => update.Timestamp == slackClient.Posts[0].Timestamp)
+            .ToArray();
+        Assert.True(mainUpdates.Length >= 2);
+        Assert.Contains(mainUpdates, update => update.Text == "hello ");
+        Assert.Equal("hello world", mainUpdates[^1].Text);
     }
 
     private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>
