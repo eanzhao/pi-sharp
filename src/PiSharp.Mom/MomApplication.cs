@@ -154,6 +154,8 @@ Examples:
         using var metadataService = new MomSlackMetadataService(slackClient, workspaceIndex);
         await metadataService.RefreshAsync(cancellationToken).ConfigureAwait(false);
         using var store = new MomChannelStore(workspaceDirectory, slackBotToken, workspaceIndex: workspaceIndex);
+        Task ReportNoticeAsync(string message, CancellationToken _) =>
+            _environment.Output.WriteLineAsync(message);
 
         var turnProcessor = new MomTurnProcessor(
             _environment,
@@ -170,7 +172,8 @@ Examples:
             store,
             metadataService,
             backfiller,
-            auth.UserId);
+            auth.UserId,
+            ReportNoticeAsync);
         var backfillResult = await backfiller.BackfillAllAsync(auth.UserId, cancellationToken).ConfigureAwait(false);
         var socketModeClient = new SlackSocketModeClient(slackClient, slackAppToken);
         using var eventsWatcher = new MomEventsWatcher(workspaceDirectory, runtime.DispatchAsync);
@@ -190,7 +193,13 @@ Examples:
         var responseCutoffTimestamp = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000d)
             .ToString("F6", CultureInfo.InvariantCulture);
         await _environment.Output.WriteLineAsync($"Listening for Slack events in {workspaceDirectory}").ConfigureAwait(false);
-        await socketModeClient.RunAsync(auth.UserId, runtime.DispatchAsync, responseCutoffTimestamp, cancellationToken).ConfigureAwait(false);
+        await socketModeClient.RunAsync(
+                auth.UserId,
+                runtime.DispatchAsync,
+                responseCutoffTimestamp,
+                ReportNoticeAsync,
+                cancellationToken)
+            .ConfigureAwait(false);
         return 0;
     }
 

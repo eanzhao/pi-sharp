@@ -312,6 +312,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
             ]);
 
         var slackClient = new FakeSlackMessagingClient();
+        var notices = new List<string>();
         var environment = new MomConsoleEnvironment(
             new StringReader(string.Empty),
             new StringWriter(),
@@ -373,7 +374,12 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
             slackClient,
             store,
             backfiller: backfiller,
-            botUserId: "B123");
+            botUserId: "B123",
+            reportNoticeAsync: (message, _) =>
+            {
+                notices.Add(message);
+                return Task.CompletedTask;
+            });
 
         await runtime.DispatchAsync(new SlackIncomingEvent(
             "C123",
@@ -394,6 +400,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Contains("Earlier missing channel message", logLines[0]);
         Assert.Contains("summarize the channel", logLines[1]);
         Assert.Contains("ack", logLines[2]);
+        Assert.Contains(notices, notice => notice == "Bootstrap backfill #1 for C123: 1 messages");
     }
 
     [Fact]
@@ -406,6 +413,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
 
         var slackClient = new FakeSlackMessagingClient();
         var historyRequestCount = 0;
+        var notices = new List<string>();
         var environment = new MomConsoleEnvironment(
             new StringReader(string.Empty),
             new StringWriter(),
@@ -477,7 +485,12 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
             slackClient,
             store,
             backfiller: backfiller,
-            botUserId: "B123");
+            botUserId: "B123",
+            reportNoticeAsync: (message, _) =>
+            {
+                notices.Add(message);
+                return Task.CompletedTask;
+            });
 
         await runtime.DispatchAsync(new SlackIncomingEvent(
             "C123",
@@ -502,6 +515,7 @@ public sealed class MomWorkspaceRuntimeTests : IDisposable
         Assert.Contains("Missed during reconnect", logLines[1]);
         Assert.Contains("summarize reconnect gap", logLines[2]);
         Assert.Contains("ack", logLines[3]);
+        Assert.Contains(notices, notice => notice == "Reconnect gap backfill #1 for C123 after reconnect #1: 1 messages");
     }
 
     private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient chatClient) =>

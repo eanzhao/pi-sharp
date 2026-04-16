@@ -12,6 +12,9 @@ public sealed class MomWorkspaceRuntime
     private readonly MomSlackMetadataService? _metadataService;
     private readonly MomLogBackfiller? _backfiller;
     private readonly string? _botUserId;
+    private readonly Func<string, CancellationToken, Task>? _reportNoticeAsync;
+    private int _bootstrapBackfillCount;
+    private int _reconnectGapBackfillCount;
 
     public MomWorkspaceRuntime(
         MomTurnProcessor turnProcessor,
@@ -19,7 +22,8 @@ public sealed class MomWorkspaceRuntime
         MomChannelStore store,
         MomSlackMetadataService? metadataService = null,
         MomLogBackfiller? backfiller = null,
-        string? botUserId = null)
+        string? botUserId = null,
+        Func<string, CancellationToken, Task>? reportNoticeAsync = null)
     {
         _turnProcessor = turnProcessor ?? throw new ArgumentNullException(nameof(turnProcessor));
         _slackClient = slackClient ?? throw new ArgumentNullException(nameof(slackClient));
@@ -27,6 +31,7 @@ public sealed class MomWorkspaceRuntime
         _metadataService = metadataService;
         _backfiller = backfiller;
         _botUserId = string.IsNullOrWhiteSpace(botUserId) ? null : botUserId.Trim();
+        _reportNoticeAsync = reportNoticeAsync;
     }
 
     public async Task DispatchAsync(SlackIncomingEvent incomingEvent, CancellationToken cancellationToken = default)
@@ -160,16 +165,23 @@ public sealed class MomWorkspaceRuntime
         {
             try
             {
-                await _backfiller.BackfillRecentHistoryAsync(
+                var messagesLogged = await _backfiller.BackfillRecentHistoryAsync(
                         incomingEvent.ChannelId,
                         _botUserId,
                         incomingEvent.Timestamp,
                         cancellationToken)
                     .ConfigureAwait(false);
+                await ReportNoticeAsync(
+                        $"Bootstrap backfill #{Interlocked.Increment(ref _bootstrapBackfillCount)} for {DescribeChannel(incomingEvent.ChannelId)}: {messagesLogged} messages",
+                        cancellationToken)
+                    .ConfigureAwait(false);
             }
-            catch
+            catch (Exception exception)
             {
-                // History bootstrap is best-effort; continue with the live event even if Slack backfill fails.
+                await ReportNoticeAsync(
+                        $"Bootstrap backfill failed for {DescribeChannel(incomingEvent.ChannelId)}: {exception.Message}",
+                        cancellationToken)
+                    .ConfigureAwait(false);
             }
 
             return;
@@ -198,17 +210,24 @@ public sealed class MomWorkspaceRuntime
 
         try
         {
-            await _backfiller.BackfillMissingHistoryAsync(
+            var messagesLogged = await _backfiller.BackfillMissingHistoryAsync(
                     incomingEvent.ChannelId,
                     _botUserId,
                     latestLoggedTimestamp!,
                     incomingEvent.Timestamp,
                     cancellationToken)
                 .ConfigureAwait(false);
+            await ReportNoticeAsync(
+                    $"Reconnect gap backfill #{Interlocked.Increment(ref _reconnectGapBackfillCount)} for {DescribeChannel(incomingEvent.ChannelId)} after reconnect #{incomingEvent.ConnectionGeneration}: {messagesLogged} messages",
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
-        catch
+        catch (Exception exception)
         {
-            // Reconnect gap backfill is best-effort; continue with the live event even if Slack history fetch fails.
+            await ReportNoticeAsync(
+                    $"Reconnect gap backfill failed for {DescribeChannel(incomingEvent.ChannelId)} after reconnect #{incomingEvent.ConnectionGeneration}: {exception.Message}",
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
@@ -226,6 +245,31 @@ public sealed class MomWorkspaceRuntime
 
     private static bool TryParseTimestamp(string value, out double timestamp) =>
         double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out timestamp);
+
+    private string DescribeChannel(string channelId)
+    {
+        var label = _store.GetChannelLabel(channelId);
+        return string.Equals(label, channelId, StringComparison.Ordinal)
+            ? channelId
+            : $"{label} ({channelId})";
+    }
+
+    private async Task ReportNoticeAsync(string message, CancellationToken cancellationToken)
+    {
+        if (_reportNoticeAsync is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _reportNoticeAsync(message, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Runtime notices are best-effort and should not interfere with turn processing.
+        }
+    }
 
     private async Task RunChannelTurnAsync(ChannelState state, SlackIncomingEvent incomingEvent)
     {

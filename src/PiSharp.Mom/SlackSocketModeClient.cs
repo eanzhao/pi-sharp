@@ -22,6 +22,7 @@ public sealed class SlackSocketModeClient
         string botUserId,
         Func<SlackIncomingEvent, CancellationToken, Task> onEventAsync,
         string? responseCutoffTimestamp = null,
+        Func<string, CancellationToken, Task>? reportNoticeAsync = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(botUserId);
@@ -34,6 +35,21 @@ public sealed class SlackSocketModeClient
             using var socket = new ClientWebSocket();
             var socketUrl = await _webApiClient.OpenSocketConnectionAsync(_appToken, cancellationToken).ConfigureAwait(false);
             await socket.ConnectAsync(new Uri(socketUrl), cancellationToken).ConfigureAwait(false);
+
+            if (connectionGeneration > 0 && reportNoticeAsync is not null)
+            {
+                try
+                {
+                    await reportNoticeAsync(
+                            $"Slack Socket Mode reconnected #{connectionGeneration}",
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Reconnect notices are best-effort and should not interfere with the socket loop.
+                }
+            }
 
             var reconnect = await ReceiveLoopAsync(
                     socket,
