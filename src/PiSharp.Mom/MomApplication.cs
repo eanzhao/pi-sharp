@@ -231,7 +231,10 @@ Examples:
             ApiKey = options.ApiKey,
         };
         var workspaceIndex = new MomSlackWorkspaceIndex();
-        using var metadataService = new MomSlackMetadataService(slackClient, workspaceIndex);
+        using var metadataService = new MomSlackMetadataService(
+            slackClient,
+            workspaceIndex,
+            persistencePath: Path.Combine(workspaceDirectory, MomDefaults.SlackMetadataFileName));
         await metadataService.RefreshAsync(cancellationToken).ConfigureAwait(false);
         using var store = new MomChannelStore(workspaceDirectory, slackBotToken, workspaceIndex: workspaceIndex);
         var runtimeStats = new MomRuntimeStats(Path.Combine(workspaceDirectory, MomDefaults.RuntimeStatsFileName));
@@ -304,9 +307,10 @@ Examples:
         var runtimeStatsFound = File.Exists(statsPath);
         MomRuntimeStats? runtimeStats = runtimeStatsFound ? new MomRuntimeStats(statsPath) : null;
         var snapshot = runtimeStats?.Snapshot();
+        var workspaceMetadataIndex = LoadWorkspaceMetadataIndex(workspaceDirectory);
         var channelStats = string.IsNullOrWhiteSpace(options.StatsChannelId)
             ? null
-            : BuildChannelStats(workspaceDirectory, options.StatsChannelId!);
+            : BuildChannelStats(workspaceDirectory, options.StatsChannelId!, workspaceMetadataIndex);
 
         if (options.JsonOutput)
         {
@@ -515,7 +519,10 @@ Examples:
     private static string FormatTimestamp(DateTimeOffset? timestamp) =>
         timestamp?.ToString("O", CultureInfo.InvariantCulture) ?? "none";
 
-    private static MomChannelStatsReport BuildChannelStats(string workspaceDirectory, string channelId)
+    private static MomChannelStatsReport BuildChannelStats(
+        string workspaceDirectory,
+        string channelId,
+        MomSlackWorkspaceIndex? workspaceMetadataIndex)
     {
         var channelDirectory = Path.Combine(workspaceDirectory, channelId);
         var logPath = Path.Combine(channelDirectory, MomDefaults.LogFileName);
@@ -523,6 +530,7 @@ Examples:
         var sessionDirectory = Path.Combine(channelDirectory, MomDefaults.SessionDirectoryName);
         var scratchDirectory = Path.Combine(channelDirectory, MomDefaults.ScratchDirectoryName);
         var channelMemoryPath = Path.Combine(channelDirectory, MomDefaults.MemoryFileName);
+        var channelName = workspaceMetadataIndex?.FindChannel(channelId)?.Name;
 
         var totalMessages = 0;
         var userMessages = 0;
@@ -530,7 +538,8 @@ Examples:
         var attachmentCount = 0;
         string? latestTimestamp = null;
         DateTimeOffset? latestAt = null;
-        string? latestUser = null;
+        string? latestUserId = null;
+        string? latestUserLabel = null;
 
         if (File.Exists(logPath))
         {
@@ -580,13 +589,16 @@ Examples:
                 {
                     latestTimestamp = entry.Ts;
                     latestAt = ParseSlackTimestamp(entry.Ts);
-                    latestUser = entry.UserName ?? entry.DisplayName ?? entry.User;
+                    latestUserId = entry.User;
+                    latestUserLabel = ResolveUserLabel(entry, workspaceMetadataIndex);
                 }
             }
         }
 
         return new MomChannelStatsReport(
             channelId,
+            channelName,
+            FormatChannelLabel(channelId, channelName),
             channelDirectory,
             Directory.Exists(channelDirectory),
             File.Exists(logPath),
@@ -596,7 +608,8 @@ Examples:
             attachmentCount,
             latestTimestamp,
             latestAt,
-            latestUser,
+            latestUserId,
+            latestUserLabel,
             Directory.Exists(attachmentsDirectory) ? Directory.EnumerateFiles(attachmentsDirectory, "*", SearchOption.AllDirectories).Count() : 0,
             Directory.Exists(sessionDirectory) ? Directory.EnumerateFiles(sessionDirectory, "*", SearchOption.AllDirectories).Count() : 0,
             File.Exists(channelMemoryPath),
@@ -605,12 +618,44 @@ Examples:
 
     private static IReadOnlyList<string> BuildChannelStatsReport(MomChannelStatsReport channelStats) =>
         [
-            $"Channel: {channelStats.ChannelId}",
+            $"Channel: {channelStats.ChannelLabel}",
             $"Channel directory: {channelStats.ChannelDirectory}",
             $"Log: found={channelStats.LogFound} messages={channelStats.TotalMessages} user={channelStats.UserMessages} bot={channelStats.BotMessages} attachments={channelStats.AttachmentCount}",
-            $"Latest logged message: ts={channelStats.LatestTimestamp ?? "none"} at={FormatTimestamp(channelStats.LatestAt)} user={channelStats.LatestUser ?? "none"}",
+            $"Latest logged message: ts={channelStats.LatestTimestamp ?? "none"} at={FormatTimestamp(channelStats.LatestAt)} user={channelStats.LatestUserLabel ?? "none"} id={channelStats.LatestUserId ?? "none"}",
             $"Local files: sessions={channelStats.SessionFileCount} attachment_files={channelStats.AttachmentFileCount} scratch_files={channelStats.ScratchFileCount} channel_memory={channelStats.ChannelMemoryExists}",
         ];
+
+    private static MomSlackWorkspaceIndex? LoadWorkspaceMetadataIndex(string workspaceDirectory)
+    {
+        var snapshot = MomSlackMetadataSnapshotStore.Load(
+            Path.Combine(workspaceDirectory, MomDefaults.SlackMetadataFileName));
+        return snapshot is null
+            ? null
+            : new MomSlackWorkspaceIndex(snapshot.Users, snapshot.Channels);
+    }
+
+    private static string ResolveUserLabel(
+        MomLoggedMessage entry,
+        MomSlackWorkspaceIndex? workspaceMetadataIndex)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.UserName))
+        {
+            return entry.UserName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.DisplayName))
+        {
+            return entry.DisplayName;
+        }
+
+        var user = workspaceMetadataIndex?.FindUser(entry.User);
+        return user?.UserName ?? user?.DisplayName ?? entry.User;
+    }
+
+    private static string FormatChannelLabel(string channelId, string? channelName) =>
+        string.IsNullOrWhiteSpace(channelName)
+            ? channelId
+            : $"{channelName} ({channelId})";
 
     private static DateTimeOffset? ParseSlackTimestamp(string timestamp) =>
         TryParseSlackTimestamp(timestamp, out var value)
@@ -622,6 +667,8 @@ Examples:
 
     private sealed record MomChannelStatsReport(
         string ChannelId,
+        string? ChannelName,
+        string ChannelLabel,
         string ChannelDirectory,
         bool ChannelDirectoryExists,
         bool LogFound,
@@ -631,7 +678,8 @@ Examples:
         int AttachmentCount,
         string? LatestTimestamp,
         DateTimeOffset? LatestAt,
-        string? LatestUser,
+        string? LatestUserId,
+        string? LatestUserLabel,
         int AttachmentFileCount,
         int SessionFileCount,
         bool ChannelMemoryExists,

@@ -183,6 +183,11 @@ public sealed class MomApplicationTests
 
         try
         {
+            MomSlackMetadataSnapshotStore.Save(
+                Path.Combine(tempDirectory, MomDefaults.SlackMetadataFileName),
+                new DateTimeOffset(2026, 4, 16, 1, 0, 0, TimeSpan.Zero),
+                [new SlackUserInfo("U123", "alice", "Alice Example")],
+                [new SlackChannelInfo("C123", "general")]);
             using var store = new MomChannelStore(tempDirectory);
             await store.LogMessageAsync(
                 "C123",
@@ -190,18 +195,8 @@ public sealed class MomApplicationTests
                 {
                     Ts = "12345.1000",
                     User = "U123",
-                    UserName = "alice",
                     Text = "hello",
                     Attachments = [new MomLoggedAttachment("report.txt", "attachments/123_report.txt")],
-                });
-            await store.LogMessageAsync(
-                "C123",
-                new MomLoggedMessage
-                {
-                    Ts = "12345.2000",
-                    User = "bot",
-                    Text = "ack",
-                    IsBot = true,
                 });
             File.WriteAllText(Path.Combine(store.GetSessionDirectory("C123"), "session.jsonl"), "{}");
             File.WriteAllText(Path.Combine(store.GetAttachmentsDirectory("C123"), "123_report.txt"), "data");
@@ -220,9 +215,10 @@ public sealed class MomApplicationTests
             Assert.Equal(0, exitCode);
             var rendered = output.ToString();
             Assert.Contains($"No runtime stats found in {Path.GetFullPath(tempDirectory)}", rendered);
-            Assert.Contains("Channel: C123", rendered);
-            Assert.Contains("Log: found=True messages=2 user=1 bot=1 attachments=1", rendered);
-            Assert.Contains("Latest logged message: ts=12345.2000", rendered);
+            Assert.Contains("Channel: general (C123)", rendered);
+            Assert.Contains("Log: found=True messages=1 user=1 bot=0 attachments=1", rendered);
+            Assert.Contains("Latest logged message: ts=12345.1000", rendered);
+            Assert.Contains("user=alice id=U123", rendered);
             Assert.Contains("Local files: sessions=1 attachment_files=1 scratch_files=1 channel_memory=True", rendered);
         }
         finally
@@ -253,6 +249,12 @@ public sealed class MomApplicationTests
                 new TimeoutException("bootstrap timed out"),
                 new DateTimeOffset(2026, 4, 16, 1, 4, 6, TimeSpan.Zero));
 
+            MomSlackMetadataSnapshotStore.Save(
+                Path.Combine(tempDirectory, MomDefaults.SlackMetadataFileName),
+                new DateTimeOffset(2026, 4, 16, 1, 0, 0, TimeSpan.Zero),
+                [new SlackUserInfo("U123", "alice", "Alice Example")],
+                [new SlackChannelInfo("C123", "general")]);
+
             var application = new MomApplication(
                 new MomConsoleEnvironment(
                     new StringReader(string.Empty),
@@ -267,7 +269,6 @@ public sealed class MomApplicationTests
                 {
                     Ts = "12345.3000",
                     User = "U123",
-                    UserName = "alice",
                     Text = "channel note",
                 });
             File.WriteAllText(Path.Combine(store.GetSessionDirectory("C123"), "session.jsonl"), "{}");
@@ -287,9 +288,12 @@ public sealed class MomApplicationTests
             Assert.Equal("bootstrap timed out", snapshot.GetProperty("lastBootstrapBackfillFailureReason").GetString());
             var channel = root.GetProperty("channel");
             Assert.Equal("C123", channel.GetProperty("channelId").GetString());
+            Assert.Equal("general", channel.GetProperty("channelName").GetString());
+            Assert.Equal("general (C123)", channel.GetProperty("channelLabel").GetString());
             Assert.True(channel.GetProperty("logFound").GetBoolean());
             Assert.Equal(1, channel.GetProperty("totalMessages").GetInt32());
-            Assert.Equal("alice", channel.GetProperty("latestUser").GetString());
+            Assert.Equal("U123", channel.GetProperty("latestUserId").GetString());
+            Assert.Equal("alice", channel.GetProperty("latestUserLabel").GetString());
         }
         finally
         {
