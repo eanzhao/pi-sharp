@@ -100,7 +100,10 @@ public sealed class MomTurnProcessor
                     CurrentTime = DateTimeOffset.UtcNow,
                 });
 
-            using var chatClient = runConfiguration.ProviderFactory.Create(runConfiguration.Model.Id, runConfiguration.ApiKey);
+            using var chatClient = runConfiguration.ProviderFactory.Create(
+                runConfiguration.Model.Id,
+                runConfiguration.ApiKey,
+                runConfiguration.ProviderEndpoint);
             using var session = await CodingAgentSession.CreateAsync(
                     chatClient,
                     new CodingAgentSessionOptions

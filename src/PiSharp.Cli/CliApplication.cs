@@ -117,8 +117,15 @@ public sealed class CliApplication
         MomDefaults.SlackAppTokenEnvironmentVariable,
         MomDefaults.SlackBotTokenEnvironmentVariable,
         "OPENAI_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT",
         "ANTHROPIC_API_KEY",
         "GOOGLE_API_KEY",
+        "GROQ_API_KEY",
+        "TOGETHER_API_KEY",
+        "MISTRAL_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "FIREWORKS_API_KEY",
         "HOME",
         "USERPROFILE",
     ];
@@ -229,7 +236,10 @@ public sealed class CliApplication
             var appendSystemPrompt = BuildAppendSystemPrompt(parsed.AppendSystemPromptInputs, workingDirectory);
             var activeToolNames = ResolveActiveToolNames(parsed, persistedSource?.Context?.ToolNames);
 
-            var rawClient = runConfiguration.ProviderFactory.Create(runConfiguration.Model.Id, runConfiguration.ApiKey);
+            var rawClient = runConfiguration.ProviderFactory.Create(
+                runConfiguration.Model.Id,
+                runConfiguration.ApiKey,
+                runConfiguration.ProviderEndpoint);
             var chatClient = WrapWithMiddleware(rawClient, parsed.Verbose, parsed.OtelEndpoint);
 
             using var session = await CodingAgentSession.CreateAsync(
@@ -314,6 +324,7 @@ public sealed class CliApplication
                 })
                 .ToArray(),
             MessageCount = session.State.Messages.Count,
+            SessionCost = session.CostAccumulator.TotalCost,
         };
 
         var json = JsonSerializer.Serialize(jsonResponse, JsonOutputOptions);
@@ -335,6 +346,7 @@ public sealed class CliApplication
         await session.PromptAsync(prompt, cancellationToken: cancellationToken).ConfigureAwait(false);
         PersistNewMessages(persistenceManager, session, ref persistedMessageCount);
         await reporter.FlushAsync().ConfigureAwait(false);
+        await WriteSessionCostAsync(session.CostAccumulator.TotalBreakdown, cancellationToken).ConfigureAwait(false);
         return 0;
     }
 
@@ -479,6 +491,7 @@ public sealed class CliApplication
         }
 
         await _environment.Terminal.WriteAsync($"{Ansi.ShowCursor}{Environment.NewLine}", cancellationToken).ConfigureAwait(false);
+        await WriteSessionCostAsync(session.CostAccumulator.TotalBreakdown, cancellationToken).ConfigureAwait(false);
         return 0;
     }
 
@@ -761,6 +774,12 @@ public sealed class CliApplication
         return value.ToString();
     }
 
+    private async Task WriteSessionCostAsync(UsageCostBreakdown breakdown, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        await _environment.Error.WriteLineAsync($"Total session cost: ${breakdown.TotalCost:0.000000}").ConfigureAwait(false);
+    }
+
     private static IChatClient WrapWithMiddleware(IChatClient inner, bool verbose, Uri? otelEndpoint)
     {
         var loggerFactory = LoggerFactory.Create(builder =>
@@ -792,6 +811,7 @@ public sealed class CliApplication
         }
 
         var chatClient = new ChatClientBuilder(inner)
+            .Use(static client => new RetryMiddleware(client))
             .UseLogging(loggerFactory)
             .UseOpenTelemetry(loggerFactory, OpenTelemetryChatSourceName)
             .Build();
@@ -866,6 +886,7 @@ public sealed class CliApplication
         public string? Model { get; init; }
         public JsonToolCall[] ToolCalls { get; init; } = [];
         public int MessageCount { get; init; }
+        public decimal SessionCost { get; init; }
     }
 
     private sealed class JsonToolCall

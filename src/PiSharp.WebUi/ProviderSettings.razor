@@ -86,6 +86,7 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadAsync().ConfigureAwait(false);
+        await ConfigurationsChanged.InvokeAsync(_configs.ToArray()).ConfigureAwait(false);
     }
 
     private async Task LoadAsync()

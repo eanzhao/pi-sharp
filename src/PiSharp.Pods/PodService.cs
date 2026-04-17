@@ -636,9 +636,19 @@ fi
                 .OrderBy(count => count)
                 .ToArray();
             var countsText = counts.Length == 0 ? "unknown" : string.Join(", ", counts);
+            var memoryText = string.Join(
+                ", ",
+                model.Configurations
+                    .Select(configuration => configuration.MinimumGpuMemory)
+                    .Where(static memory => !string.IsNullOrWhiteSpace(memory))
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
             lines.Add($"{model.Id}");
             lines.Add($"  Name: {model.Name}");
             lines.Add($"  GPU counts: {countsText}");
+            if (!string.IsNullOrWhiteSpace(memoryText))
+            {
+                lines.Add($"  GPU memory: {memoryText}");
+            }
             if (!string.IsNullOrWhiteSpace(model.Notes))
             {
                 lines.Add($"  Note: {model.Notes}");
@@ -646,6 +656,23 @@ fi
         }
 
         return string.Join(Environment.NewLine, lines);
+    }
+
+    public PodGpuAllocationSummary GetGpuAllocationSummary(string? podName = null)
+    {
+        var podReference = ResolvePod(podName);
+        var allocated = podReference.Pod.Models.Values
+            .SelectMany(static deployment => deployment.GpuIds)
+            .Distinct()
+            .OrderBy(static id => id)
+            .ToArray();
+        var free = podReference.Pod.Gpus
+            .Select(static gpu => gpu.Id)
+            .Except(allocated)
+            .OrderBy(static id => id)
+            .ToArray();
+
+        return new PodGpuAllocationSummary(podReference.Name, allocated, free);
     }
 
     private static PodDoctorReport CreateDoctorReport(

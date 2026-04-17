@@ -81,9 +81,14 @@ public sealed class ProviderModelDiscoveryService
     {
         return provider.Configuration.ProviderId.Value.ToLowerInvariant() switch
         {
-            "openai" => await DiscoverOpenAiModelsAsync(apiKey, cancellationToken).ConfigureAwait(false),
+            "openai" => await DiscoverOpenAiModelsAsync(provider, apiKey, cancellationToken).ConfigureAwait(false),
+            "azure-openai" => provider.KnownModels
+                .Select(static model => new DiscoveredModelRecord(model.Id, model.Name, model.ContextWindow, model.MaxOutputTokens))
+                .ToArray(),
             "anthropic" => await DiscoverAnthropicModelsAsync(apiKey, cancellationToken).ConfigureAwait(false),
             "google" => await DiscoverGoogleModelsAsync(apiKey, cancellationToken).ConfigureAwait(false),
+            "groq" or "together" or "mistral" or "deepseek" or "fireworks"
+                => await DiscoverOpenAiModelsAsync(provider, apiKey, cancellationToken).ConfigureAwait(false),
             _ => provider.KnownModels
                 .Select(static model => new DiscoveredModelRecord(model.Id, model.Name, model.ContextWindow, model.MaxOutputTokens))
                 .ToArray(),
@@ -91,10 +96,11 @@ public sealed class ProviderModelDiscoveryService
     }
 
     private async Task<IReadOnlyList<DiscoveredModelRecord>> DiscoverOpenAiModelsAsync(
+        CodingAgentProviderFactory provider,
         string apiKey,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.openai.com/v1/models");
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildOpenAiModelsEndpoint(provider.Configuration.Endpoint));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -110,6 +116,18 @@ public sealed class ProviderModelDiscoveryService
             .OrderBy(static model => model.Id, StringComparer.OrdinalIgnoreCase)
             .ToArray()
             ?? Array.Empty<DiscoveredModelRecord>();
+    }
+
+    private static Uri BuildOpenAiModelsEndpoint(Uri? baseEndpoint)
+    {
+        if (baseEndpoint is null)
+        {
+            return new Uri("https://api.openai.com/v1/models");
+        }
+
+        var builder = new UriBuilder(baseEndpoint);
+        builder.Path = $"{builder.Path.TrimEnd('/')}/models";
+        return builder.Uri;
     }
 
     private async Task<IReadOnlyList<DiscoveredModelRecord>> DiscoverAnthropicModelsAsync(

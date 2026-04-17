@@ -9,6 +9,7 @@
     <Project Path="src/PiSharp.Pods.Cli/PiSharp.Pods.Cli.csproj" />
     <Project Path="src/PiSharp.Tui/PiSharp.Tui.csproj" />
     <Project Path="src/PiSharp.WebUi/PiSharp.WebUi.csproj" />
+    <Project Path="src/PiSharp.WebUi.App/PiSharp.WebUi.App.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/PiSharp.Ai.Tests/PiSharp.Ai.Tests.csproj" />

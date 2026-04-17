@@ -40,6 +40,7 @@ public sealed class KnownModelCatalog
                     new KnownModelConfiguration(
                         configuration.GpuCount,
                         configuration.GpuTypes?.ToArray() ?? Array.Empty<string>(),
+                        configuration.MinimumGpuMemory,
                         configuration.Arguments?.ToArray() ?? Array.Empty<string>(),
                         configuration.EnvironmentVariables is null
                             ? new Dictionary<string, string>(StringComparer.Ordinal)
@@ -98,6 +99,7 @@ public sealed class KnownModelCatalog
         return new KnownModelSelection(
             fallbackMatch.Arguments.ToArray(),
             new Dictionary<string, string>(fallbackMatch.EnvironmentVariables, StringComparer.Ordinal),
+            fallbackMatch.MinimumGpuMemory,
             fallbackMatch.Notes ?? model.Notes);
     }
 
@@ -136,6 +138,7 @@ public sealed class KnownModelCatalog
     internal sealed record KnownModelConfigurationEntry(
         int GpuCount,
         List<string>? GpuTypes,
+        [property: JsonPropertyName("gpuMemory")] string? MinimumGpuMemory,
         [property: JsonPropertyName("args")] List<string>? Arguments,
         [property: JsonPropertyName("env")] Dictionary<string, string>? EnvironmentVariables,
         string? Notes);

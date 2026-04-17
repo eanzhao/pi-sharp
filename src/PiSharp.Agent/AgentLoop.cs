@@ -289,11 +289,19 @@ public static class AgentLoop
             assistantMessage.CreatedAt = response.CreatedAt;
         }
 
+        var pricedUsage = response.Usage ?? usage;
+        if (pricedUsage is not null)
+        {
+            var extendedUsage = pricedUsage as ExtendedUsageDetails ?? ExtendedUsageDetails.FromUsage(pricedUsage);
+            extendedUsage.ApplyPricing(model.Pricing);
+            pricedUsage = extendedUsage;
+        }
+
         return AgentMessageMetadata.WithAssistantMetadata(
             assistantMessage,
             model,
             response.FinishReason ?? finishReason,
-            response.Usage ?? usage);
+            pricedUsage);
     }
 
     private static ChatMessage BuildFailureAssistantMessage(

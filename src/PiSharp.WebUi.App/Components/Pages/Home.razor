@@ -1,0 +1,363 @@
+@page "/"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IAsyncDisposable
+@using Microsoft.Extensions.AI
+@using PiSharp.Ai
+@using PiSharp.Agent
+@using PiSharp.CodingAgent
+@using AgentRuntime = PiSharp.Agent.Agent
+@inject IChatStorageService ChatStorage
+
+<section class="workspace-grid">
+    <aside class="workspace-rail">
+        <div class="workspace-card">
+            <div class="workspace-card-header">
+                <div>
+                    <p class="workspace-label">sessions</p>
+                    <h2>Stored Chats</h2>
+                </div>
+                <button type="button" class="workspace-button" @onclick="StartNewSessionAsync" disabled="@(!HasSelectedProvider)">New</button>
+            </div>
+
+            <form class="workspace-search" @onsubmit="RefreshSessionsAsync" @onsubmit:preventDefault="true">
+                <input @bind="_sessionFilter"
+                       @bind:event="oninput"
+                       placeholder="Filter by title" />
+            </form>
+
+            @if (_sessions.Count == 0)
+            {
+                <p class="workspace-empty">No saved sessions yet.</p>
+            }
+            else
+            {
+                <div class="session-list">
+                    @foreach (var session in _sessions)
+                    {
+                        <article class="session-card @(session.SessionId == _selectedSessionId ? "session-card-active" : string.Empty)">
+                            <button type="button" class="session-card-select" @onclick="() => LoadSessionAsync(session.SessionId)">
+                                <strong>@session.Title</strong>
+                                <span>@(string.IsNullOrWhiteSpace(session.ModelId) ? "Unspecified model" : session.ModelId)</span>
+                                <span>@session.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</span>
+                            </button>
+                            <button type="button" class="session-card-delete" @onclick="() => DeleteSessionAsync(session.SessionId)">Delete</button>
+                        </article>
+                    }
+                </div>
+            }
+        </div>
+    </aside>
+
+    <section class="workspace-main">
+        <div class="workspace-card workspace-toolbar">
+            <div class="workspace-toolbar-row">
+                <label>
+                    <span>Provider</span>
+                    <select value="@(_selectedProviderDisplayName ?? string.Empty)" @onchange="HandleProviderSelectionChangedAsync">
+                        <option value="">Select a provider</option>
+                        @foreach (var config in _providerConfigurations)
+                        {
+                            <option value="@config.DisplayName">@config.DisplayName</option>
+                        }
+                    </select>
+                </label>
+
+                <div class="workspace-status">
+                    <span>@CurrentProviderModelLabel</span>
+                    <span>@CurrentSessionLabel</span>
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_statusMessage))
+            {
+                <p class="workspace-note">@_statusMessage</p>
+            }
+        </div>
+
+        <ChatPanel Agent="_agent"
+                   Title="@CurrentChatTitle"
+                   Placeholder="Ask the selected provider about your codebase or architecture" />
+    </section>
+
+    <aside class="workspace-sidepanel">
+        <ProviderSettings ConfigurationsChanged="HandleProviderConfigurationsChangedAsync" />
+    </aside>
+</section>
+
+@code {
+    private readonly List<ChatSessionMetadata> _sessions = [];
+    private List<CustomProviderConfig> _providerConfigurations = [];
+
+    private AgentRuntime? _agent;
+    private IChatClient? _chatClient;
+    private Action? _unsubscribe;
+
+    private string? _selectedProviderDisplayName;
+    private string? _selectedSessionId;
+    private string _sessionFilter = string.Empty;
+    private string? _statusMessage;
+    private DateTimeOffset? _currentSessionCreatedAt;
+
+    private bool HasSelectedProvider => GetSelectedProvider() is not null;
+
+    private string CurrentChatTitle =>
+        _sessions.FirstOrDefault(session => session.SessionId == _selectedSessionId)?.Title
+        ?? "Agent Console";
+
+    private string CurrentProviderModelLabel =>
+        GetSelectedProvider() is { } provider
+            ? $"{provider.DisplayName} / {provider.ModelId}"
+            : "No provider selected";
+
+    private string CurrentSessionLabel =>
+        string.IsNullOrWhiteSpace(_selectedSessionId)
+            ? "Session not started"
+            : $"Session {_selectedSessionId}";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        await RefreshSessionsAsync().ConfigureAwait(false);
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _unsubscribe?.Invoke();
+        _chatClient?.Dispose();
+        _unsubscribe = null;
+        _chatClient = null;
+        _agent = null;
+        await ValueTask.CompletedTask;
+    }
+
+    private async Task HandleProviderConfigurationsChangedAsync(IReadOnlyList<CustomProviderConfig> configurations)
+    {
+        _providerConfigurations = configurations
+            .OrderBy(static config => config.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (_providerConfigurations.Count == 0)
+        {
+            await ResetAgentAsync("Add a provider to start chatting from this host app.").ConfigureAwait(false);
+            return;
+        }
+
+        if (_selectedProviderDisplayName is null ||
+            _providerConfigurations.All(config => !string.Equals(config.DisplayName, _selectedProviderDisplayName, StringComparison.OrdinalIgnoreCase)))
+        {
+            _selectedProviderDisplayName = _providerConfigurations[0].DisplayName;
+        }
+
+        if (_selectedSessionId is null)
+        {
+            await StartNewSessionAsync().ConfigureAwait(false);
+            return;
+        }
+
+        if (_agent is null)
+        {
+            await RebuildAgentAsync(Array.Empty<SessionChatMessage>()).ConfigureAwait(false);
+        }
+    }
+
+    private async Task HandleProviderSelectionChangedAsync(ChangeEventArgs args)
+    {
+        _selectedProviderDisplayName = args.Value?.ToString();
+        var existingMessages = _agent?.State.Messages.Select(SessionChatMessage.FromChatMessage).ToArray() ?? Array.Empty<SessionChatMessage>();
+        await RebuildAgentAsync(existingMessages).ConfigureAwait(false);
+    }
+
+    private async Task StartNewSessionAsync()
+    {
+        _selectedSessionId = Guid.NewGuid().ToString("N")[..12];
+        _currentSessionCreatedAt = DateTimeOffset.UtcNow;
+        await RebuildAgentAsync(Array.Empty<SessionChatMessage>()).ConfigureAwait(false);
+        await PersistCurrentSessionAsync().ConfigureAwait(false);
+    }
+
+    private async Task LoadSessionAsync(string sessionId)
+    {
+        var record = await ChatStorage.LoadSessionRecordAsync(sessionId).ConfigureAwait(false);
+        if (record is null)
+        {
+            _statusMessage = $"Session '{sessionId}' was not found.";
+            await RefreshSessionsAsync().ConfigureAwait(false);
+            return;
+        }
+
+        _selectedSessionId = sessionId;
+        _currentSessionCreatedAt = record.Metadata.CreatedAt;
+
+        var matchingProvider = _providerConfigurations.FirstOrDefault(config =>
+            string.Equals(config.ModelId, record.Metadata.ModelId, StringComparison.OrdinalIgnoreCase));
+        if (matchingProvider is not null)
+        {
+            _selectedProviderDisplayName = matchingProvider.DisplayName;
+        }
+
+        await RebuildAgentAsync(record.Messages).ConfigureAwait(false);
+    }
+
+    private async Task DeleteSessionAsync(string sessionId)
+    {
+        await ChatStorage.DeleteSessionAsync(sessionId).ConfigureAwait(false);
+
+        if (string.Equals(_selectedSessionId, sessionId, StringComparison.Ordinal))
+        {
+            _selectedSessionId = null;
+            _currentSessionCreatedAt = null;
+            await ResetAgentAsync("Session deleted. Start a new one or select another saved chat.").ConfigureAwait(false);
+        }
+
+        await RefreshSessionsAsync().ConfigureAwait(false);
+    }
+
+    private async Task RefreshSessionsAsync()
+    {
+        _sessions.Clear();
+        _sessions.AddRange(await ChatStorage.ListSessionsAsync(new ChatSessionQuery(_sessionFilter)).ConfigureAwait(false));
+    }
+
+    private async Task RebuildAgentAsync(IReadOnlyList<SessionChatMessage> messages)
+    {
+        var provider = GetSelectedProvider();
+        if (provider is null)
+        {
+            await ResetAgentAsync("Select a provider configuration before creating a session.").ConfigureAwait(false);
+            return;
+        }
+
+        _unsubscribe?.Invoke();
+        _chatClient?.Dispose();
+
+        _chatClient = provider.CreateChatClient();
+        var providerId = BuildProviderId(provider.DisplayName);
+        var model = new ModelMetadata(
+            provider.ModelId,
+            provider.ModelId,
+            ApiId.OpenAi,
+            providerId,
+            128_000,
+            32_768,
+            ModelCapability.TextInput | ModelCapability.Streaming | ModelCapability.ToolCalling,
+            ModelPricing.Free);
+
+        _agent = new AgentRuntime(
+            _chatClient,
+            new AgentOptions
+            {
+                Model = model,
+                Messages = messages.Select(static message => message.ToChatMessage()).ToArray(),
+            });
+
+        _unsubscribe = _agent.Subscribe(
+            async (@event, cancellationToken) =>
+            {
+                if (@event is AgentEvent.MessageCompleted)
+                {
+                    await PersistCurrentSessionAsync(cancellationToken).ConfigureAwait(false);
+                }
+            });
+
+        _statusMessage = $"Bound to {provider.DisplayName}. Messages persist in browser storage.";
+    }
+
+    private async Task ResetAgentAsync(string message)
+    {
+        _unsubscribe?.Invoke();
+        _chatClient?.Dispose();
+        _unsubscribe = null;
+        _chatClient = null;
+        _agent = null;
+        _statusMessage = message;
+        await Task.CompletedTask;
+    }
+
+    private async Task PersistCurrentSessionAsync(CancellationToken cancellationToken = default)
+    {
+        if (_agent is null || _selectedSessionId is null)
+        {
+            return;
+        }
+
+        var messages = _agent.State.Messages.Select(SessionChatMessage.FromChatMessage).ToArray();
+        var createdAt = _currentSessionCreatedAt
+            ?? ResolveCreatedAt(messages)
+            ?? DateTimeOffset.UtcNow;
+
+        _currentSessionCreatedAt = createdAt;
+
+        var metadata = new ChatSessionMetadata(
+            _selectedSessionId,
+            ResolveTitle(_selectedSessionId, messages),
+            GetSelectedProvider()?.ModelId,
+            createdAt,
+            DateTimeOffset.UtcNow);
+
+        await ChatStorage.SaveSessionAsync(_selectedSessionId, metadata, messages, cancellationToken).ConfigureAwait(false);
+        await RefreshSessionsAsync().ConfigureAwait(false);
+        await InvokeAsync(StateHasChanged).ConfigureAwait(false);
+    }
+
+    private CustomProviderConfig? GetSelectedProvider() =>
+        _providerConfigurations.FirstOrDefault(config =>
+            string.Equals(config.DisplayName, _selectedProviderDisplayName, StringComparison.OrdinalIgnoreCase));
+
+    private static ProviderId BuildProviderId(string displayName)
+    {
+        var safeName = new string(displayName
+            .Trim()
+            .ToLowerInvariant()
+            .Select(character => char.IsLetterOrDigit(character) ? character : '-')
+            .ToArray())
+            .Trim('-');
+
+        return string.IsNullOrWhiteSpace(safeName)
+            ? new ProviderId("custom-openai")
+            : new ProviderId($"custom-{safeName}");
+    }
+
+    private static DateTimeOffset? ResolveCreatedAt(IEnumerable<SessionChatMessage> messages)
+    {
+        foreach (var message in messages)
+        {
+            if (DateTimeOffset.TryParse(message.CreatedAt, out var createdAt))
+            {
+                return createdAt;
+            }
+        }
+
+        return null;
+    }
+
+    private static string ResolveTitle(string sessionId, IReadOnlyList<SessionChatMessage> messages)
+    {
+        foreach (var message in messages)
+        {
+            if (!string.Equals(message.Role, ChatRole.User.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foreach (var content in message.Contents)
+            {
+                if (content.Type != SessionContentType.Text || string.IsNullOrWhiteSpace(content.Text))
+                {
+                    continue;
+                }
+
+                var normalized = content.Text.Trim().ReplaceLineEndings(" ");
+                return normalized.Length <= 72
+                    ? normalized
+                    : $"{normalized[..69].TrimEnd()}...";
+            }
+        }
+
+        return sessionId;
+    }
+}

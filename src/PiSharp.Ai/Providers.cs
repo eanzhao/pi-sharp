@@ -20,8 +20,14 @@ public readonly record struct ApiId(string Value)
 public readonly record struct ProviderId(string Value)
 {
     public static readonly ProviderId OpenAi = new("openai");
+    public static readonly ProviderId AzureOpenAi = new("azure-openai");
     public static readonly ProviderId Anthropic = new("anthropic");
     public static readonly ProviderId Google = new("google");
+    public static readonly ProviderId Groq = new("groq");
+    public static readonly ProviderId Together = new("together");
+    public static readonly ProviderId Mistral = new("mistral");
+    public static readonly ProviderId DeepSeek = new("deepseek");
+    public static readonly ProviderId Fireworks = new("fireworks");
 
     public override string ToString() => Value;
 

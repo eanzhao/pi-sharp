@@ -187,6 +187,48 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_PrintsTotalSessionCostToErrorStream()
+    {
+        var repoDirectory = Path.Combine(_rootDirectory, "cost-repo");
+        Directory.CreateDirectory(repoDirectory);
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var fakeClient = new FakeChatClient(
+            [
+                CreateUpdate(new TextContent("done")),
+                CreateUpdate(new UsageContent(new UsageDetails
+                {
+                    InputTokenCount = 1_000,
+                    OutputTokenCount = 500,
+                }), ChatFinishReason.Stop),
+            ]);
+
+        var environment = new CliEnvironment(
+            new StringReader(string.Empty),
+            output,
+            error,
+            repoDirectory,
+            isInputRedirected: false,
+            environmentVariables: new Dictionary<string, string?>
+            {
+                ["OPENAI_API_KEY"] = "test-key",
+            });
+
+        var application = new CliApplication(
+            environment,
+            CreateProviderCatalog(
+                fakeClient,
+                new ModelPricing(1m, 2m)));
+
+        var exitCode = await application.RunAsync(["hello"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal($"done{Environment.NewLine}", output.ToString());
+        Assert.Contains("Total session cost: $0.002000", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsync_LoadsImageFileArgumentsAsDataContent()
     {
         var repoDirectory = Path.Combine(_rootDirectory, "image-repo");
@@ -564,7 +606,9 @@ public sealed class CliApplicationTests : IDisposable
         Assert.Contains("not found", error.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static CodingAgentProviderCatalog CreateProviderCatalog(FakeChatClient fakeClient) =>
+    private static CodingAgentProviderCatalog CreateProviderCatalog(
+        FakeChatClient fakeClient,
+        ModelPricing? pricing = null) =>
         new(
         [
             new CodingAgentProviderFactory
@@ -585,7 +629,7 @@ public sealed class CliApplicationTests : IDisposable
                         1_000_000,
                         32_768,
                         ModelCapability.TextInput | ModelCapability.Streaming | ModelCapability.ToolCalling,
-                        ModelPricing.Free),
+                        pricing ?? ModelPricing.Free),
                 ],
                 CreateChatClient = (_, _) => fakeClient,
             },

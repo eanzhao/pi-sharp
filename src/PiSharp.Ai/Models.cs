@@ -16,13 +16,74 @@ public enum ModelCapability
     PromptCaching = 1 << 5,
 }
 
-public sealed record ModelPricing(
-    decimal InputPerMillionTokens,
-    decimal OutputPerMillionTokens,
-    decimal CacheReadPerMillionTokens = 0m,
-    decimal CacheWritePerMillionTokens = 0m)
+public sealed record TokenPricing
 {
+    public TokenPricing(decimal firstPerMillionTokens)
+        : this(firstPerMillionTokens, null, null)
+    {
+    }
+
+    public TokenPricing(
+        decimal firstPerMillionTokens,
+        long? firstTierTokenLimit,
+        decimal? additionalPerMillionTokens)
+    {
+        FirstPerMillionTokens = firstPerMillionTokens;
+        FirstTierTokenLimit = firstTierTokenLimit is > 0 ? firstTierTokenLimit : null;
+        AdditionalPerMillionTokens = additionalPerMillionTokens ?? firstPerMillionTokens;
+    }
+
+    public decimal FirstPerMillionTokens { get; init; }
+
+    public long? FirstTierTokenLimit { get; init; }
+
+    public decimal AdditionalPerMillionTokens { get; init; }
+}
+
+public sealed record ModelPricing
+{
+    public ModelPricing(
+        decimal inputPerMillionTokens,
+        decimal outputPerMillionTokens,
+        decimal cacheReadPerMillionTokens = 0m,
+        decimal cacheWritePerMillionTokens = 0m)
+        : this(
+            new TokenPricing(inputPerMillionTokens),
+            new TokenPricing(outputPerMillionTokens),
+            new TokenPricing(cacheReadPerMillionTokens),
+            new TokenPricing(cacheWritePerMillionTokens))
+    {
+    }
+
+    public ModelPricing(
+        TokenPricing inputPricing,
+        TokenPricing outputPricing,
+        TokenPricing? cacheReadPricing = null,
+        TokenPricing? cacheWritePricing = null)
+    {
+        InputPricing = inputPricing ?? throw new ArgumentNullException(nameof(inputPricing));
+        OutputPricing = outputPricing ?? throw new ArgumentNullException(nameof(outputPricing));
+        CacheReadPricing = cacheReadPricing ?? new TokenPricing(0m);
+        CacheWritePricing = cacheWritePricing ?? new TokenPricing(0m);
+    }
+
     public static ModelPricing Free { get; } = new(0m, 0m);
+
+    public TokenPricing InputPricing { get; init; }
+
+    public TokenPricing OutputPricing { get; init; }
+
+    public TokenPricing CacheReadPricing { get; init; }
+
+    public TokenPricing CacheWritePricing { get; init; }
+
+    public decimal InputPerMillionTokens => InputPricing.FirstPerMillionTokens;
+
+    public decimal OutputPerMillionTokens => OutputPricing.FirstPerMillionTokens;
+
+    public decimal CacheReadPerMillionTokens => CacheReadPricing.FirstPerMillionTokens;
+
+    public decimal CacheWritePerMillionTokens => CacheWritePricing.FirstPerMillionTokens;
 }
 
 public sealed record ModelMetadata(

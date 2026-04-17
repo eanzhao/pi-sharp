@@ -111,6 +111,7 @@ public sealed class CodingAgentSession : IDisposable
     private readonly List<AgentEventHandler> _listeners = [];
     private readonly ExtensionRunner? _extensionRunner;
     private readonly Action _unsubscribe;
+    private readonly SessionCostAccumulator _costAccumulator = new();
     private bool _disposed;
 
     private CodingAgentSession(
@@ -139,6 +140,8 @@ public sealed class CodingAgentSession : IDisposable
     public IReadOnlyList<string> ActiveToolNames { get; }
 
     public ExtensionRunner? ExtensionRunner => _extensionRunner;
+
+    public SessionCostAccumulator CostAccumulator => _costAccumulator;
 
     public static async Task<CodingAgentSession> CreateAsync(
         IChatClient chatClient,
@@ -232,6 +235,11 @@ public sealed class CodingAgentSession : IDisposable
             finalTools.Select(static tool => tool.Name).ToArray(),
             extensionRunner);
 
+        foreach (var message in agent.State.Messages)
+        {
+            session.TrackMessageCost(message);
+        }
+
         if (extensionRunner is not null)
         {
             await extensionRunner.BindAsync(session, cancellationToken).ConfigureAwait(false);
@@ -322,6 +330,12 @@ public sealed class CodingAgentSession : IDisposable
 
     private async ValueTask HandleAgentEventAsync(AgentEvent @event, CancellationToken cancellationToken)
     {
+        if (@event is AgentEvent.MessageCompleted { Message: { Role: var role } message } &&
+            role == ChatRole.Assistant)
+        {
+            TrackMessageCost(message);
+        }
+
         if (_extensionRunner is not null)
         {
             await _extensionRunner.DispatchAsync(this, @event, cancellationToken).ConfigureAwait(false);
@@ -331,6 +345,16 @@ public sealed class CodingAgentSession : IDisposable
         {
             await listener(@event, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private void TrackMessageCost(ChatMessage message)
+    {
+        if (!AgentMessageMetadata.TryGetUsage(message, out var usage) || usage is null)
+        {
+            return;
+        }
+
+        _costAccumulator.AddUsage(usage, State.Model.Pricing);
     }
 
     private static IReadOnlyList<string> GetStableToolNameList(IEnumerable<string> toolNames)

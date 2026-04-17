@@ -37,6 +37,8 @@ public sealed class CodingAgentToolsTests : IDisposable
                 }));
 
         Assert.Equal("alpha\nbeta\nbeta", NormalizeScalarResult(readResult.Value));
+        var readContent = Assert.IsType<TextContent>(Assert.Single(readResult.Content));
+        Assert.Equal("alpha\nbeta\nbeta", readContent.Text);
 
         var editResult = await tools[BuiltInToolNames.Edit].ExecuteAsync(
             "call-edit",
@@ -168,7 +170,46 @@ public sealed class CodingAgentToolsTests : IDisposable
     }
 
     [Fact]
-    public async Task ReadTool_ReturnsImageHintForImageFiles()
+    public async Task GrepTool_FiltersByFileType()
+    {
+        Directory.CreateDirectory(Path.Combine(_workingDirectory, "src"));
+        await File.WriteAllTextAsync(Path.Combine(_workingDirectory, "src", "app.cs"), "needle\n");
+        await File.WriteAllTextAsync(Path.Combine(_workingDirectory, "src", "app.tsx"), "needle\n");
+        await File.WriteAllTextAsync(Path.Combine(_workingDirectory, "README.md"), "needle\n");
+
+        var grepResult = await CodingAgentTools.CreateAll(_workingDirectory)[BuiltInToolNames.Grep].ExecuteAsync(
+            "call-grep-file-type",
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["pattern"] = "needle",
+                    ["fileType"] = "cs",
+                }));
+
+        var text = NormalizeScalarResult(grepResult.Value);
+        Assert.Contains("src/app.cs:1: needle", text);
+        Assert.DoesNotContain("src/app.tsx", text);
+        Assert.DoesNotContain("README.md", text);
+    }
+
+    [Fact]
+    public async Task GrepTool_RejectsUnknownFileType()
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
+            CodingAgentTools.CreateAll(_workingDirectory)[BuiltInToolNames.Grep].ExecuteAsync(
+                "call-grep-bad-file-type",
+                new AIFunctionArguments(
+                    new Dictionary<string, object?>
+                    {
+                        ["pattern"] = "needle",
+                        ["fileType"] = "unknown-type",
+                    })).AsTask());
+
+        Assert.Contains("Unsupported fileType", exception.Message);
+    }
+
+    [Fact]
+    public async Task ReadTool_ReturnsImageContentForImageFiles()
     {
         var imagePath = Path.Combine(_workingDirectory, "diagram.png");
         var imageBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47 };
@@ -182,9 +223,14 @@ public sealed class CodingAgentToolsTests : IDisposable
                     ["path"] = "diagram.png",
                 }));
 
-        Assert.Equal(
-            "Image file detected: diagram.png (4 bytes). Use the file path in your response to reference it.",
-            NormalizeScalarResult(readResult.Value));
+        Assert.Equal("__PI_SHARP_IMAGE__:diagram.png", NormalizeScalarResult(readResult.Value));
+        Assert.Equal(2, readResult.Content.Count);
+        Assert.Equal("Reading image: diagram.png", Assert.IsType<TextContent>(readResult.Content[0]).Text);
+
+        var data = Assert.IsType<DataContent>(readResult.Content[1]);
+        Assert.Equal("image/png", data.MediaType);
+        Assert.Equal("diagram.png", data.Name);
+        Assert.Equal(imageBytes, data.Data.ToArray());
     }
 
     [Fact]
@@ -228,6 +274,53 @@ public sealed class CodingAgentToolsTests : IDisposable
     }
 
     [Fact]
+    public async Task EditTool_AppliesMultiSegmentEditsSequentially()
+    {
+        var filePath = Path.Combine(_workingDirectory, "notes.txt");
+        await File.WriteAllTextAsync(filePath, "alpha beta gamma");
+
+        var result = await CodingAgentTools.CreateAll(_workingDirectory)[BuiltInToolNames.Edit].ExecuteAsync(
+            "call-edit-multi",
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["path"] = "notes.txt",
+                    ["edits"] = new[]
+                    {
+                        new EditSegment("beta", "delta"),
+                        new EditSegment("delta gamma", "epsilon"),
+                    },
+                }));
+
+        Assert.Equal("Applied 2 edits to notes.txt.", NormalizeScalarResult(result.Value));
+        Assert.Equal("alpha epsilon", await File.ReadAllTextAsync(filePath));
+    }
+
+    [Fact]
+    public async Task EditTool_MultiSegmentEditsValidateEachReplacement()
+    {
+        var filePath = Path.Combine(_workingDirectory, "notes.txt");
+        await File.WriteAllTextAsync(filePath, "alpha beta gamma");
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CodingAgentTools.CreateAll(_workingDirectory)[BuiltInToolNames.Edit].ExecuteAsync(
+                "call-edit-multi-fail",
+                new AIFunctionArguments(
+                    new Dictionary<string, object?>
+                    {
+                        ["path"] = "notes.txt",
+                        ["edits"] = new[]
+                        {
+                            new EditSegment("beta", "delta"),
+                            new EditSegment("missing", "epsilon"),
+                        },
+                    })).AsTask());
+
+        Assert.Contains("edit segment #2", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("alpha beta gamma", await File.ReadAllTextAsync(filePath));
+    }
+
+    [Fact]
     public async Task BashTool_ExecutesCommand()
     {
         var command = OperatingSystem.IsWindows() ? "echo hello" : "printf hello";
@@ -244,6 +337,27 @@ public sealed class CodingAgentToolsTests : IDisposable
         var text = NormalizeScalarResult(result.Value);
         Assert.Contains("Exit code: 0", text);
         Assert.Contains("hello", text);
+    }
+
+    [Fact]
+    public async Task BashTool_TracksModifiedFilesFromCommandOutput()
+    {
+        var command = OperatingSystem.IsWindows()
+            ? "powershell -NoProfile -Command \"[Console]::Error.WriteLine('mv old.txt new.txt')\""
+            : "printf 'mv old.txt new.txt\\n' >&2";
+
+        var bashTool = CodingAgentTools.CreateAll(_workingDirectory)[BuiltInToolNames.Bash];
+
+        var result = await bashTool.ExecuteAsync(
+            "call-bash-track",
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["command"] = command,
+                }));
+
+        var tracker = Assert.IsType<FileMutationTracker>(result.Details);
+        Assert.Equal(["old.txt", "new.txt"], tracker.ModifiedFiles);
     }
 
     public void Dispose()

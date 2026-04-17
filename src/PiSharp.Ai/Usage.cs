@@ -36,20 +36,88 @@ public sealed record UsageCostBreakdown(
             : null;
 
         return new UsageCostBreakdown(
-            ScaleCost(usage.InputTokenCount, pricing.InputPerMillionTokens),
-            ScaleCost(usage.OutputTokenCount, pricing.OutputPerMillionTokens),
-            ScaleCost(usage.CachedInputTokenCount, pricing.CacheReadPerMillionTokens),
-            ScaleCost(cacheWriteTokenCount, pricing.CacheWritePerMillionTokens));
+            ScaleCost(usage.InputTokenCount, pricing.InputPricing),
+            ScaleCost(usage.OutputTokenCount, pricing.OutputPricing),
+            ScaleCost(usage.CachedInputTokenCount, pricing.CacheReadPricing),
+            ScaleCost(cacheWriteTokenCount, pricing.CacheWritePricing));
     }
 
-    private static decimal ScaleCost(long? tokenCount, decimal pricePerMillionTokens)
+    private static decimal ScaleCost(long? tokenCount, TokenPricing pricing)
     {
-        if (tokenCount is null || tokenCount <= 0 || pricePerMillionTokens <= 0m)
+        ArgumentNullException.ThrowIfNull(pricing);
+
+        if (tokenCount is null || tokenCount <= 0)
         {
             return 0m;
         }
 
-        return tokenCount.Value * pricePerMillionTokens / 1_000_000m;
+        if (pricing.FirstTierTokenLimit is null || pricing.FirstTierTokenLimit <= 0)
+        {
+            return ScaleCost(tokenCount.Value, pricing.FirstPerMillionTokens);
+        }
+
+        var firstTierTokens = Math.Min(tokenCount.Value, pricing.FirstTierTokenLimit.Value);
+        var additionalTokens = Math.Max(0, tokenCount.Value - firstTierTokens);
+
+        return ScaleCost(firstTierTokens, pricing.FirstPerMillionTokens)
+            + ScaleCost(additionalTokens, pricing.AdditionalPerMillionTokens);
+    }
+
+    private static decimal ScaleCost(long tokenCount, decimal pricePerMillionTokens)
+    {
+        if (tokenCount <= 0 || pricePerMillionTokens <= 0m)
+        {
+            return 0m;
+        }
+
+        return tokenCount * pricePerMillionTokens / 1_000_000m;
+    }
+}
+
+public sealed class SessionCostAccumulator
+{
+    private readonly object _sync = new();
+    private UsageCostBreakdown _total = UsageCostBreakdown.Zero;
+
+    public UsageCostBreakdown TotalBreakdown
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _total;
+            }
+        }
+    }
+
+    public decimal TotalCost => TotalBreakdown.TotalCost;
+
+    public void Add(UsageCostBreakdown? breakdown)
+    {
+        if (breakdown is null)
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            _total = _total.Add(breakdown);
+        }
+    }
+
+    public UsageCostBreakdown AddUsage(UsageDetails? usage, ModelPricing pricing)
+    {
+        if (usage is null)
+        {
+            return UsageCostBreakdown.Zero;
+        }
+
+        var breakdown = usage is ExtendedUsageDetails { Cost: not null } extendedUsage
+            ? extendedUsage.Cost!
+            : UsageCostBreakdown.Calculate(usage, pricing);
+
+        Add(breakdown);
+        return breakdown;
     }
 }
 

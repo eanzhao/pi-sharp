@@ -30,6 +30,43 @@ public sealed class UsageAndRegistryTests
     }
 
     [Fact]
+    public void UsageCostBreakdown_Calculate_UsesTieredPricing()
+    {
+        var usage = new UsageDetails
+        {
+            InputTokenCount = 150,
+            OutputTokenCount = 75,
+        };
+
+        var cost = UsageCostBreakdown.Calculate(
+            usage,
+            new ModelPricing(
+                new TokenPricing(1m, 100, 2m),
+                new TokenPricing(4m, 50, 8m)));
+
+        Assert.Equal(0.0002m, cost.InputCost);
+        Assert.Equal(0.0004m, cost.OutputCost);
+        Assert.Equal(0.0006m, cost.TotalCost);
+    }
+
+    [Fact]
+    public void SessionCostAccumulator_AddUsage_UsesPricedUsage()
+    {
+        var usage = ExtendedUsageDetails.FromUsage(
+            new UsageDetails
+            {
+                InputTokenCount = 1_000,
+                OutputTokenCount = 500,
+            });
+        usage.ApplyPricing(new ModelPricing(1m, 2m));
+
+        var accumulator = new SessionCostAccumulator();
+        accumulator.AddUsage(usage, ModelPricing.Free);
+
+        Assert.Equal(0.002m, accumulator.TotalCost);
+    }
+
+    [Fact]
     public void ProviderRegistry_RegistersAndFiltersProvidersByApi()
     {
         var registry = new ProviderRegistry();

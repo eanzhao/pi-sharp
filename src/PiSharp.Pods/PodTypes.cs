@@ -96,6 +96,8 @@ public sealed record ModelDeploymentRequest
 
     public int? GpuCount { get; init; }
 
+    public IReadOnlyList<int>? GpuIds { get; init; }
+
     public IReadOnlyList<string> CustomVllmArguments { get; init; } = Array.Empty<string>();
 }
 
@@ -123,6 +125,7 @@ public sealed record ModelDeploymentPlan
 public sealed record KnownModelConfiguration(
     int GpuCount,
     IReadOnlyList<string> GpuTypes,
+    string? MinimumGpuMemory,
     IReadOnlyList<string> Arguments,
     IReadOnlyDictionary<string, string> EnvironmentVariables,
     string? Notes);
@@ -136,7 +139,13 @@ public sealed record KnownModelDefinition(
 public sealed record KnownModelSelection(
     IReadOnlyList<string> Arguments,
     IReadOnlyDictionary<string, string> EnvironmentVariables,
+    string? MinimumGpuMemory,
     string? Notes);
+
+public sealed record PodGpuAllocationSummary(
+    string PodName,
+    IReadOnlyList<int> AllocatedGpuIds,
+    IReadOnlyList<int> FreeGpuIds);
 
 public sealed class PodPromptToolOptions
 {

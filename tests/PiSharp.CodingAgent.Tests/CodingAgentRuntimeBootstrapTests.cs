@@ -74,6 +74,38 @@ public sealed class CodingAgentRuntimeBootstrapTests : IDisposable
         Assert.Equal("repo", configuration.ContextFiles[1].Content);
     }
 
+    [Fact]
+    public void Resolve_UsesEndpointEnvironmentVariableForAzureCompatibleProviders()
+    {
+        var settingsManager = SettingsManager.InMemory(new CodingAgentSettings());
+        var providerCatalog = new CodingAgentProviderCatalog(
+        [
+            CreateProvider(
+                ProviderId.AzureOpenAi,
+                ApiId.OpenAi,
+                "AZURE_OPENAI_API_KEY",
+                "gpt-4.1-mini",
+                endpointEnvironmentVariable: "AZURE_OPENAI_ENDPOINT"),
+        ]);
+        var bootstrap = new CodingAgentRuntimeBootstrap(providerCatalog, settingsManager);
+
+        var configuration = bootstrap.Resolve(
+            new CodingAgentBootstrapRequest
+            {
+                WorkingDirectory = _rootDirectory,
+                Provider = "azure-openai",
+            },
+            name => name switch
+            {
+                "AZURE_OPENAI_API_KEY" => "azure-key",
+                "AZURE_OPENAI_ENDPOINT" => "https://example-resource.openai.azure.com/",
+                _ => null,
+            });
+
+        Assert.Equal("azure-key", configuration.ApiKey);
+        Assert.Equal("https://example-resource.openai.azure.com/", configuration.ProviderEndpoint);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_rootDirectory))
@@ -106,7 +138,8 @@ public sealed class CodingAgentRuntimeBootstrapTests : IDisposable
         ProviderId providerId,
         ApiId apiId,
         string apiKeyEnvironmentVariable,
-        string defaultModelId) =>
+        string defaultModelId,
+        string? endpointEnvironmentVariable = null) =>
         new()
         {
             Configuration = new ProviderConfiguration(
@@ -115,6 +148,7 @@ public sealed class CodingAgentRuntimeBootstrapTests : IDisposable
                 providerId.Value,
                 DefaultModelId: defaultModelId,
                 ApiKeyEnvironmentVariable: apiKeyEnvironmentVariable),
+            EndpointEnvironmentVariable = endpointEnvironmentVariable,
             KnownModels =
             [
                 new ModelMetadata(

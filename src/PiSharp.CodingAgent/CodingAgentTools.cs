@@ -23,8 +23,43 @@ public sealed class CodingAgentToolOptions
     public int BashMaxOutputCharacters { get; init; } = 12_000;
 }
 
+public sealed record EditSegment(string OldText, string NewText);
+
 public static class CodingAgentTools
 {
+    private const string ImageReadMarkerPrefix = "__PI_SHARP_IMAGE__:";
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> GrepFileTypeExtensions =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["c"] = new HashSet<string>([".c", ".h"], StringComparer.OrdinalIgnoreCase),
+            ["cpp"] = new HashSet<string>([".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx"], StringComparer.OrdinalIgnoreCase),
+            ["cs"] = new HashSet<string>([".cs"], StringComparer.OrdinalIgnoreCase),
+            ["csharp"] = new HashSet<string>([".cs"], StringComparer.OrdinalIgnoreCase),
+            ["css"] = new HashSet<string>([".css", ".less", ".sass", ".scss"], StringComparer.OrdinalIgnoreCase),
+            ["go"] = new HashSet<string>([".go"], StringComparer.OrdinalIgnoreCase),
+            ["html"] = new HashSet<string>([".htm", ".html"], StringComparer.OrdinalIgnoreCase),
+            ["java"] = new HashSet<string>([".java"], StringComparer.OrdinalIgnoreCase),
+            ["js"] = new HashSet<string>([".cjs", ".js", ".jsx", ".mjs"], StringComparer.OrdinalIgnoreCase),
+            ["javascript"] = new HashSet<string>([".cjs", ".js", ".jsx", ".mjs"], StringComparer.OrdinalIgnoreCase),
+            ["json"] = new HashSet<string>([".json"], StringComparer.OrdinalIgnoreCase),
+            ["kt"] = new HashSet<string>([".kt", ".kts"], StringComparer.OrdinalIgnoreCase),
+            ["md"] = new HashSet<string>([".md", ".mdx"], StringComparer.OrdinalIgnoreCase),
+            ["markdown"] = new HashSet<string>([".md", ".mdx"], StringComparer.OrdinalIgnoreCase),
+            ["php"] = new HashSet<string>([".php"], StringComparer.OrdinalIgnoreCase),
+            ["py"] = new HashSet<string>([".py"], StringComparer.OrdinalIgnoreCase),
+            ["python"] = new HashSet<string>([".py"], StringComparer.OrdinalIgnoreCase),
+            ["rb"] = new HashSet<string>([".rb"], StringComparer.OrdinalIgnoreCase),
+            ["rs"] = new HashSet<string>([".rs"], StringComparer.OrdinalIgnoreCase),
+            ["sh"] = new HashSet<string>([".bash", ".sh", ".zsh"], StringComparer.OrdinalIgnoreCase),
+            ["sql"] = new HashSet<string>([".sql"], StringComparer.OrdinalIgnoreCase),
+            ["swift"] = new HashSet<string>([".swift"], StringComparer.OrdinalIgnoreCase),
+            ["ts"] = new HashSet<string>([".cts", ".mts", ".ts", ".tsx"], StringComparer.OrdinalIgnoreCase),
+            ["typescript"] = new HashSet<string>([".cts", ".mts", ".ts", ".tsx"], StringComparer.OrdinalIgnoreCase),
+            ["xml"] = new HashSet<string>([".xml"], StringComparer.OrdinalIgnoreCase),
+            ["yaml"] = new HashSet<string>([".yaml", ".yml"], StringComparer.OrdinalIgnoreCase),
+            ["yml"] = new HashSet<string>([".yaml", ".yml"], StringComparer.OrdinalIgnoreCase),
+        };
+
     public static IReadOnlyDictionary<string, string> PromptSnippets { get; } =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -46,18 +81,9 @@ public static class CodingAgentTools
 
         return new Dictionary<string, AgentTool>(StringComparer.Ordinal)
         {
-            [BuiltInToolNames.Read] = AgentTool.Create(
-                runtime.ReadAsync,
-                name: BuiltInToolNames.Read,
-                description: "Read a text file from the working directory. Supports offset and limit for partial reads."),
-            [BuiltInToolNames.Bash] = AgentTool.Create(
-                runtime.BashAsync,
-                name: BuiltInToolNames.Bash,
-                description: "Run a shell command in the working directory and return stdout, stderr, and exit code."),
-            [BuiltInToolNames.Edit] = AgentTool.Create(
-                runtime.EditAsync,
-                name: BuiltInToolNames.Edit,
-                description: "Apply an exact text replacement to an existing file in the working directory."),
+            [BuiltInToolNames.Read] = CreateReadTool(runtime),
+            [BuiltInToolNames.Bash] = CreateBashTool(runtime),
+            [BuiltInToolNames.Edit] = CreateEditTool(runtime),
             [BuiltInToolNames.Write] = AgentTool.Create(
                 runtime.WriteAsync,
                 name: BuiltInToolNames.Write,
@@ -110,6 +136,57 @@ public static class CodingAgentTools
         return selectedTools;
     }
 
+    private static AgentTool CreateReadTool(BuiltInToolRuntime runtime)
+    {
+        const string description = "Read a file from the working directory. Supports offset and limit for partial reads. Image files return multimodal content.";
+
+        var function = AIFunctionFactory.Create(
+            runtime.ReadAsync,
+            new AIFunctionFactoryOptions
+            {
+                Name = BuiltInToolNames.Read,
+                Description = description,
+            });
+
+        return new AgentTool(
+            function,
+            executeAsync: async (_, arguments, __, cancellationToken) =>
+            {
+                var path = GetRequiredStringArgument(arguments, "path");
+                var offset = GetOptionalInt32Argument(arguments, "offset");
+                var limit = GetOptionalInt32Argument(arguments, "limit");
+                return await runtime.ExecuteReadToolAsync(path, offset, limit, cancellationToken).ConfigureAwait(false);
+            });
+    }
+
+    private static AgentTool CreateBashTool(BuiltInToolRuntime runtime)
+    {
+        const string description = "Run a shell command in the working directory and return stdout, stderr, and exit code.";
+
+        var function = AIFunctionFactory.Create(
+            runtime.BashAsync,
+            new AIFunctionFactoryOptions
+            {
+                Name = BuiltInToolNames.Bash,
+                Description = description,
+            });
+
+        return new AgentTool(
+            function,
+            executeAsync: async (_, arguments, __, cancellationToken) =>
+            {
+                var command = GetRequiredStringArgument(arguments, "command");
+                var timeoutMs = GetOptionalInt32Argument(arguments, "timeoutMs");
+                return await runtime.ExecuteBashToolAsync(command, timeoutMs, cancellationToken).ConfigureAwait(false);
+            });
+    }
+
+    private static AgentTool CreateEditTool(BuiltInToolRuntime runtime) =>
+        AgentTool.Create(
+            runtime.EditToolAsync,
+            name: BuiltInToolNames.Edit,
+            description: "Apply exact text replacements to an existing file in the working directory. Supports single edits and multi-edit arrays.");
+
     private sealed class BuiltInToolRuntime(WorkingDirectoryScope scope, CodingAgentToolOptions options)
     {
         private static readonly StringComparison PathComparison = OperatingSystem.IsWindows()
@@ -118,7 +195,7 @@ public static class CodingAgentTools
 
         private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
         {
-            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+            ".png", ".jpg", ".jpeg", ".gif", ".webp",
         };
 
         private static readonly HashSet<string> PdfExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -132,6 +209,36 @@ public static class CodingAgentTools
             int? limit = null,
             CancellationToken cancellationToken = default)
         {
+            var readResult = await ReadCoreAsync(path, offset, limit, cancellationToken).ConfigureAwait(false);
+            return readResult.Value;
+        }
+
+        public async Task<IReadOnlyList<AIContent>> ReadContentAsync(
+            string path,
+            int? offset = null,
+            int? limit = null,
+            CancellationToken cancellationToken = default)
+        {
+            var readResult = await ReadCoreAsync(path, offset, limit, cancellationToken).ConfigureAwait(false);
+            return readResult.Content;
+        }
+
+        public async Task<AgentToolResult> ExecuteReadToolAsync(
+            string path,
+            int? offset = null,
+            int? limit = null,
+            CancellationToken cancellationToken = default)
+        {
+            var readResult = await ReadCoreAsync(path, offset, limit, cancellationToken).ConfigureAwait(false);
+            return new AgentToolResult(readResult.Value, readResult.Content, readResult.Value);
+        }
+
+        private async Task<ReadResult> ReadCoreAsync(
+            string path,
+            int? offset,
+            int? limit,
+            CancellationToken cancellationToken)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
             var fullPath = scope.ResolvePath(path);
@@ -140,21 +247,37 @@ public static class CodingAgentTools
             var extension = Path.GetExtension(fullPath);
             if (ImageExtensions.Contains(extension))
             {
-                var fileInfo = new FileInfo(fullPath);
-                return $"Image file detected: {scope.ToDisplayPath(fullPath)} ({fileInfo.Length} bytes). Use the file path in your response to reference it.";
+                if (!CodingAgentContextLoader.TryGetImageMediaType(fullPath, out var mediaType))
+                {
+                    throw new InvalidOperationException($"Unsupported image file type '{extension}'.");
+                }
+
+                var displayPath = scope.ToDisplayPath(fullPath);
+                var imageBytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
+                return new ReadResult(
+                    CreateImageReadMarker(displayPath),
+                    [
+                        new TextContent($"Reading image: {displayPath}"),
+                        new DataContent(imageBytes, mediaType)
+                        {
+                            Name = displayPath,
+                        },
+                    ]);
             }
 
             if (PdfExtensions.Contains(extension))
             {
                 var fileInfo = new FileInfo(fullPath);
-                return $"PDF file detected: {scope.ToDisplayPath(fullPath)} ({fileInfo.Length} bytes). PDF text extraction not yet available.";
+                var message = $"PDF file detected: {scope.ToDisplayPath(fullPath)} ({fileInfo.Length} bytes). PDF text extraction not yet available.";
+                return new ReadResult(message, [new TextContent(message)]);
             }
 
             var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken).ConfigureAwait(false);
             if (!CanDecodeUtf8(bytes))
             {
                 var fileInfo = new FileInfo(fullPath);
-                return $"Binary file detected: {scope.ToDisplayPath(fullPath)} ({fileInfo.Length} bytes). Cannot display binary content.";
+                var message = $"Binary file detected: {scope.ToDisplayPath(fullPath)} ({fileInfo.Length} bytes). Cannot display binary content.";
+                return new ReadResult(message, [new TextContent(message)]);
             }
 
             var content = await File.ReadAllTextAsync(fullPath, cancellationToken).ConfigureAwait(false);
@@ -169,7 +292,7 @@ public static class CodingAgentTools
 
             if (allLines.Length == 1 && allLines[0].Length == 0)
             {
-                return string.Empty;
+                return new ReadResult(string.Empty, [new TextContent(string.Empty)]);
             }
 
             if (startLine > allLines.Length)
@@ -219,7 +342,7 @@ public static class CodingAgentTools
                 output += note;
             }
 
-            return output;
+            return new ReadResult(output, [new TextContent(output)]);
         }
 
         public async Task<string> WriteAsync(
@@ -282,6 +405,84 @@ public static class CodingAgentTools
             return replaceAll
                 ? $"Replaced {occurrenceCount} occurrences in {scope.ToDisplayPath(fullPath)}."
                 : $"Updated {scope.ToDisplayPath(fullPath)}.";
+        }
+
+        public Task<string> EditToolAsync(
+            string path,
+            string? oldText = null,
+            string? newText = null,
+            bool replaceAll = false,
+            EditSegment[]? edits = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (edits is { Length: > 0 })
+            {
+                return EditMultiAsync(path, edits, cancellationToken);
+            }
+
+            if (edits is not null)
+            {
+                throw new ArgumentException("edits must contain at least one segment when provided.", nameof(edits));
+            }
+
+            if (oldText is null)
+            {
+                throw new ArgumentNullException(nameof(oldText));
+            }
+
+            if (newText is null)
+            {
+                throw new ArgumentNullException(nameof(newText));
+            }
+
+            return EditAsync(path, oldText, newText, replaceAll, cancellationToken);
+        }
+
+        public async Task<string> EditMultiAsync(
+            string path,
+            IReadOnlyList<EditSegment> edits,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            ArgumentNullException.ThrowIfNull(edits);
+
+            if (edits.Count == 0)
+            {
+                throw new ArgumentException("edits must contain at least one segment.", nameof(edits));
+            }
+
+            var fullPath = scope.ResolvePath(path);
+            EnsureFileExists(fullPath, path);
+
+            var content = await File.ReadAllTextAsync(fullPath, cancellationToken).ConfigureAwait(false);
+
+            for (var index = 0; index < edits.Count; index++)
+            {
+                var edit = edits[index] ?? throw new InvalidOperationException($"Edit segment #{index + 1} was null.");
+                ArgumentNullException.ThrowIfNull(edit.OldText);
+                ArgumentNullException.ThrowIfNull(edit.NewText);
+
+                if (edit.OldText.Length == 0)
+                {
+                    throw new ArgumentException($"Edit segment #{index + 1} oldText must not be empty.", nameof(edits));
+                }
+
+                var occurrenceCount = CountOccurrences(content, edit.OldText);
+                if (occurrenceCount == 0)
+                {
+                    throw new InvalidOperationException($"Could not find edit segment #{index + 1} text in {path}.");
+                }
+
+                if (occurrenceCount > 1)
+                {
+                    throw new InvalidOperationException($"Edit segment #{index + 1} occurs {occurrenceCount} times in {path}. Provide a more specific oldText.");
+                }
+
+                content = ReplaceFirst(content, edit.OldText, edit.NewText);
+            }
+
+            await File.WriteAllTextAsync(fullPath, content, cancellationToken).ConfigureAwait(false);
+            return $"Applied {edits.Count} edits to {scope.ToDisplayPath(fullPath)}.";
         }
 
         public async Task<string> EditDiffAsync(
@@ -350,6 +551,27 @@ public static class CodingAgentTools
             int? timeoutMs = null,
             CancellationToken cancellationToken = default)
         {
+            var execution = await ExecuteBashCoreAsync(command, timeoutMs, cancellationToken).ConfigureAwait(false);
+            return execution.Output;
+        }
+
+        public async Task<AgentToolResult> ExecuteBashToolAsync(
+            string command,
+            int? timeoutMs = null,
+            CancellationToken cancellationToken = default)
+        {
+            var execution = await ExecuteBashCoreAsync(command, timeoutMs, cancellationToken).ConfigureAwait(false);
+            return new AgentToolResult(
+                execution.Output,
+                [new TextContent(execution.Output)],
+                execution.MutationTracker);
+        }
+
+        private async Task<BashToolExecution> ExecuteBashCoreAsync(
+            string command,
+            int? timeoutMs,
+            CancellationToken cancellationToken)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(command);
 
             var effectiveTimeout = timeoutMs ?? options.BashTimeoutMilliseconds;
@@ -364,7 +586,13 @@ public static class CodingAgentTools
                 effectiveTimeout,
                 cancellationToken).ConfigureAwait(false);
 
-            return FormatBashResult(result, options.BashMaxOutputCharacters);
+            var tracker = new FileMutationTracker(scope.RootPath);
+            tracker.Scan(result.StandardOutput);
+            tracker.Scan(result.StandardError);
+
+            return new BashToolExecution(
+                FormatBashResult(result, options.BashMaxOutputCharacters),
+                tracker);
         }
 
         public Task<string> LsAsync(
@@ -477,6 +705,7 @@ public static class CodingAgentTools
             string pattern,
             string? path = null,
             int? limit = null,
+            string? fileType = null,
             CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
@@ -494,6 +723,7 @@ public static class CodingAgentTools
                 throw new ArgumentOutOfRangeException(nameof(limit), "limit must be greater than or equal to 1.");
             }
 
+            var allowedExtensions = ResolveGrepFileTypeExtensions(fileType);
             var regex = new Regex(pattern, RegexOptions.Multiline | RegexOptions.CultureInvariant);
             var matches = new List<string>();
 
@@ -502,6 +732,11 @@ public static class CodingAgentTools
                 : scope.EnumerateFileSystemEntries(startPath)
                     .Where(entry => !entry.IsDirectory)
                     .Select(entry => entry.Path);
+
+            if (allowedExtensions is not null)
+            {
+                files = files.Where(filePath => allowedExtensions.Contains(Path.GetExtension(filePath)));
+            }
 
             foreach (var filePath in files)
             {
@@ -537,6 +772,21 @@ public static class CodingAgentTools
             }
 
             return Task.FromResult(matches.Count == 0 ? "No matches found." : string.Join('\n', matches));
+        }
+
+        private static IReadOnlySet<string>? ResolveGrepFileTypeExtensions(string? fileType)
+        {
+            if (string.IsNullOrWhiteSpace(fileType))
+            {
+                return null;
+            }
+
+            if (GrepFileTypeExtensions.TryGetValue(fileType.Trim(), out var extensions))
+            {
+                return extensions;
+            }
+
+            throw new ArgumentException($"Unsupported fileType '{fileType}'.", nameof(fileType));
         }
 
         private static void EnsureFileExists(string fullPath, string originalPath)
@@ -622,6 +872,10 @@ public static class CodingAgentTools
 
             return $"{value[..maxCharacters].TrimEnd()}\n[output truncated]";
         }
+
+        private sealed record ReadResult(string Value, IReadOnlyList<AIContent> Content);
+
+        private sealed record BashToolExecution(string Output, FileMutationTracker MutationTracker);
     }
 
     private sealed class WorkingDirectoryScope
@@ -818,5 +1072,55 @@ public static class CodingAgentTools
 
             return startInfo;
         }
+    }
+
+    private static string CreateImageReadMarker(string path) => $"{ImageReadMarkerPrefix}{path}";
+
+    private static string GetRequiredStringArgument(AIFunctionArguments arguments, string name)
+    {
+        var value = GetOptionalStringArgument(arguments, name);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException($"Missing required argument '{name}'.", nameof(arguments));
+        }
+
+        return value;
+    }
+
+    private static string? GetOptionalStringArgument(AIFunctionArguments arguments, string name)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        if (!arguments.TryGetValue(name, out var value) || value is null)
+        {
+            return null;
+        }
+
+        return value switch
+        {
+            string text => text,
+            System.Text.Json.JsonElement jsonElement when jsonElement.ValueKind == System.Text.Json.JsonValueKind.String => jsonElement.GetString(),
+            _ => value.ToString(),
+        };
+    }
+
+    private static int? GetOptionalInt32Argument(AIFunctionArguments arguments, string name)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        if (!arguments.TryGetValue(name, out var value) || value is null)
+        {
+            return null;
+        }
+
+        return value switch
+        {
+            int number => number,
+            long number => checked((int)number),
+            System.Text.Json.JsonElement jsonElement when jsonElement.ValueKind == System.Text.Json.JsonValueKind.Number => jsonElement.GetInt32(),
+            _ => Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture),
+        };
     }
 }
